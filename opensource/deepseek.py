@@ -440,7 +440,7 @@ class FiddlerDeepSeekV2:
             src = getattr(self.model.layers[layer_idx].mlp.experts[expert_id], name).weight.data
             dst.copy_(src)
         copytime = time.time() - tick
-        print(f"预取专家: 层 {layer_idx} 专家 {expert_id} -> {copytime*1000:.2f}ms")
+        # print(f"预取专家: 层 {layer_idx} 专家 {expert_id} -> {copytime*1000:.2f}ms")
         
         # 记录专家到占位专家的映射，以便后续使用
         self.expert_to_placeholder[(layer_idx, expert_id)] = target_placeholder
@@ -578,22 +578,56 @@ class FiddlerDeepSeekV2:
         # 获取单个专家的参数量
         fine_expert = self.model.layers[1].mlp.experts[0]
         n_param = sum(p.numel() for p in fine_expert.parameters())
-        print(f"Number of parameters in a single expert: {n_param}")
         
         # 获取GPU显存信息
         total_mem = torch.cuda.get_device_properties(self.dev).total_memory
+        total_mem_gb = total_mem / (1024**3)
+        used_mem = torch.cuda.memory_allocated(self.dev)
+        used_mem_gb = used_mem / (1024**3)
         # 预留5%显存，使用95%
-        free_mem = total_mem * 0.95 - torch.cuda.memory_allocated(self.dev)
+        free_mem = total_mem * 0.95 - used_mem
+        free_mem_gb = free_mem / (1024**3)
+        
+        # 单个专家的显存占用 (bfloat16 = 2 bytes per param)
+        expert_mem_bytes = n_param * 2
+        expert_mem_mb = expert_mem_bytes / (1024**2)
+        expert_mem_gb = expert_mem_bytes / (1024**3)
+        
+        # 调试信息
+        print(f"[DEBUG calc_n_expert_on_gpu]")
+        print(f"  GPU总显存: {total_mem_gb:.2f} GB")
+        print(f"  已占用显存: {used_mem_gb:.2f} GB")
+        print(f"  可用显存(95%): {free_mem_gb:.2f} GB")
+        print(f"  单个专家参数量: {n_param:,}")
+        print(f"  单个专家显存占用: {expert_mem_mb:.2f} MB ({expert_mem_gb:.4f} GB)")
+        print(f"  模型总专家数: {(self.n_layer-1) * self.n_expert}")
         
         # 根据batch_size使用不同策略
         if self.batch_size == 64:
-            return 893
+            n_expert = 893
         elif self.batch_size == 32:
-            return 993
+            n_expert = 993
         elif self.batch_size == 16:
-            return 693
+            n_expert = 693
         else:
-            return int((free_mem) // (n_param * 2) - 930)
+            # 计算能容纳的专家数量，不使用硬编码的magic number
+            calculated_n = int(free_mem / expert_mem_bytes)
+            # 预留一定buffer给KV缓存和中间计算，根据batch_size调整
+            buffer_factor = 0.7  # 使用70%的可用显存
+            n_expert = int(calculated_n * buffer_factor)
+            print(f"  计算的专家数量(无buffer): {calculated_n}")
+            print(f"  buffer_factor: {buffer_factor}")
+        
+        # 确保返回正数
+        n_expert = max(n_expert, 1)
+        # 限制最大值为总专家数
+        max_experts = (self.n_layer - 1) * self.n_expert
+        n_expert = min(n_expert, max_experts)
+        
+        print(f"  最终GPU专家数量: {n_expert}/{max_experts}")
+        print(f"  预计GPU显存占用: {n_expert * expert_mem_mb:.2f} MB")
+        
+        return n_expert
 
 
     def initial_beam_tensor(self, input_tensor):
@@ -634,7 +668,7 @@ class FiddlerDeepSeekV2:
         
         # 初始化统计
         self.cnt_expert_hit = 0
-        self.cnt_expert_all = 1
+        self.cnt_expert_all = 0  # 改为0，每次generate时正确计数
         self.expert_selection_stats = []
         self.expert_time_stats = []
         
@@ -702,7 +736,7 @@ class FiddlerDeepSeekV2:
                 # TODO: streaming output for beam search
             if self.is_decode:
                 for i in range(input_ids.shape[0]):
-                    decode_strings[i] += " " + self.tokenizer.decode(input_ids[i, :])
+                    decode_strings[i] += " " + self.tokenizer.decode(input_ids[i, :].tolist())
             # new_mask = torch.ones((attention_mask.shape[0], 1), dtype=torch.bool, device=self.dev)
             # attention_mask = torch.cat([attention_mask, new_mask], dim=1)     
             #        
@@ -794,7 +828,7 @@ class FiddlerDeepSeekV2:
         return (
             prefill_time,
             decode_time,
-            self.cnt_expert_hit / self.cnt_expert_all,
+            self.cnt_expert_hit / self.cnt_expert_all if self.cnt_expert_all > 0 else 0.0,
             {
                 'perf_stats': self.perf_stats,
                 'expert_selection': self.expert_selection_stats,
@@ -1155,6 +1189,12 @@ class FiddlerDeepSeekV2:
                     cpu_time = 0.0
                     self._prefetch_thread_started=False
                     for i_expert in selected_expert_ids:
+                        # 统计命中率：专家是否在初始规划的GPU位置上
+                        self.cnt_expert_all += 1
+                        if self.expert_loc[i_layer, i_expert] == 1 and self.is_expert_in_gpu_now(i_layer, i_expert):
+                            # 命中：规划在GPU上且实际也在GPU上
+                            self.cnt_expert_hit += 1
+                        
                         # 检查专家是否在GPU上
                         if self.is_expert_in_gpu_now(i_layer, i_expert):
                             gpu_experts.append(i_expert)
@@ -1518,19 +1558,19 @@ class FiddlerDeepSeekV2:
                     max_thread_time = max(gpu_time, cpu_time)
                     parallel_degree = (gpu_time + cpu_time) / parallel_time if parallel_time > 0 else 1.0
 
-                    # 打印时间统计
-                    if self.is_decode:
-                        stats_text = f"\nLayer {i_layer} Thread Time Stats:\n"
-                        stats_text += f"GPU Thread Time: {gpu_time*1000:.2f}ms\n"
-                        stats_text += f"CPU Thread Time: {cpu_time*1000:.2f}ms\n"
-                        stats_text += f"Parallel Time: {parallel_time*1000:.2f}ms\n"
-                        stats_text += f"Parallel Degree: {parallel_degree:.2f}x\n"
-                        print(stats_text)
+                    # 打印时间统计（已注释以提高性能）
+                    # if self.is_decode:
+                    #     stats_text = f"\nLayer {i_layer} Thread Time Stats:\n"
+                    #     stats_text += f"GPU Thread Time: {gpu_time*1000:.2f}ms\n"
+                    #     stats_text += f"CPU Thread Time: {cpu_time*1000:.2f}ms\n"
+                    #     stats_text += f"Parallel Time: {parallel_time*1000:.2f}ms\n"
+                    #     stats_text += f"Parallel Degree: {parallel_degree:.2f}x\n"
+                    #     print(stats_text)
                         
-                        # 写入到临时日志文件
-                        os.makedirs('./log', exist_ok=True)
-                        with open('./log/linshi.txt', 'a') as f:
-                            f.write(stats_text)
+                    #     # 写入到临时日志文件
+                    #     os.makedirs('./log', exist_ok=True)
+                    #     with open('./log/linshi.txt', 'a') as f:
+                    #         f.write(stats_text)
                     # 合并GPU处理结果
                     # 合并CPU处理结果（需要移动到GPU）
                     for mask_index, expert_output in cpu_results:
@@ -1582,7 +1622,7 @@ class FiddlerDeepSeekV2:
             # print(f"层 {layer_id} 热点专家: {hot_experts[layer_id][0]}")    
         if self.is_decode:
             # 打印层时间统计
-            print("\n各层处理时间统计(ms):")
+            # print("\n各层处理时间统计(ms):")
             for i in range(1, 27):
                 # cpu_time = self.cpu_expert_time_per_layer[i] * 1000
                 layer_time = layer_times[i] * 1000
@@ -1612,17 +1652,17 @@ class FiddlerDeepSeekV2:
                 
                 # f.write(f"平均每层时间: {avg_layer_time*1000:.2f}ms (CPU专家平均占比: {avg_cpu_ratio:.1f}%)\n")
         other_ops_start = time.time()
-        print("ok")
+        # print("ok")
         inps = self.model.norm(inps)
         lm_logis = self.lm_head(inps)
 
         if self.is_decode:
             other_ops_time = time.time() - other_ops_start
             total_decode_time = time.time() - total_decode_start
-            print(f"\nToken处理时间统计:")
-            print(f"总时长: {total_decode_time*1000:.2f}ms")
-            print(f"  - {self.n_layer}层处理: {layer_total_time*1000:.2f}ms (平均每层: {layer_total_time*1000/self.n_layer:.2f}ms)")
-            print(f"  - 其他操作(norm+lm_head): {other_ops_time*1000:.2f}ms")
+            # print(f"\nToken处理时间统计:")
+            # print(f"总时长: {total_decode_time*1000:.2f}ms")
+            # print(f"  - {self.n_layer}层处理: {layer_total_time*1000:.2f}ms (平均每层: {layer_total_time*1000/self.n_layer:.2f}ms)")
+            # print(f"  - 其他操作(norm+lm_head): {other_ops_time*1000:.2f}ms")
         self.present_key_value = present_key_value
         return lm_logis
 

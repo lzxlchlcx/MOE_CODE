@@ -11,7 +11,7 @@ MODELS=(
     # "/home/share/bz/model/Moonlight-16B-A3B-Instruct"
 )
 # BATCH_SIZES=(4 8 16 32 64)
-BATCH_SIZES=(1)
+BATCH_SIZES=(1 4 8 16)
 
 # 遍历所有模型
 for model in "${MODELS[@]}"; do
@@ -25,7 +25,7 @@ for model in "${MODELS[@]}"; do
 
         # 执行测试命令
         python latency.py --model "$model" --batch_size "$bs"
-        sleep 100        
+        sleep 5        
         # python microbench.py --model "$model"        
         echo ""
         echo "Benchmark for $model with batch_size=$bs completed"
