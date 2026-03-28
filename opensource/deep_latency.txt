@@ -1,0 +1,1 @@
+batchsize: 64input_token: 128, output_token: 32, prefill_time: 78.88779044151306, decode_time: 81.46689097086589, hit_rate: 0.0,0.20token/s
