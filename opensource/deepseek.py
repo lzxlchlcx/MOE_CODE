@@ -142,7 +142,7 @@ class FiddlerDeepSeekV2:
         self.expert_time_stats = []  # 记录专家处理时间
         
         # 初始化每层的专家选择历史和命中统计
-        self.expert_selection_history = {}
+        self.expert_selection_history = {} 
         self.hit_stats = {}
         for i in range(1, 27):
             self.expert_selection_history[i] = []
@@ -613,7 +613,7 @@ class FiddlerDeepSeekV2:
             # 计算能容纳的专家数量，不使用硬编码的magic number
             calculated_n = int(free_mem / expert_mem_bytes)
             # 预留一定buffer给KV缓存和中间计算，根据batch_size调整
-            buffer_factor = 0.7  # 使用70%的可用显存
+            buffer_factor = 0.9  # 使用70%的可用显存
             n_expert = int(calculated_n * buffer_factor)
             print(f"  计算的专家数量(无buffer): {calculated_n}")
             print(f"  buffer_factor: {buffer_factor}")
@@ -726,10 +726,10 @@ class FiddlerDeepSeekV2:
             with_stack=True
         )
         
-        # prof.start()
+        prof.start()
 
         for i_token in range(output_token):
-            # prof.step()
+            prof.step()
             token_start_time = time.time()  # 记录单个token开始时间            
             # if self.beam_width == 1:
                 # print(self.tokenizer.decode(input_ids[0]))
@@ -804,7 +804,7 @@ class FiddlerDeepSeekV2:
             )
             token_time = time.time() - token_start_time
             self.token_decode_times.append(token_time)
-            # print(f"Token {i_token} decode time: {token_time*1000:.2f}ms")
+            print(f"Token {i_token} decode time: {token_time*1000:.2f}ms")
             
             # position_ids.shape: (1, 1)
             if not self.is_decode:
@@ -815,16 +815,16 @@ class FiddlerDeepSeekV2:
         probs = probs.view(-1, self.beam_width)
         max_ids = torch.argmax(probs, dim=-1)
 
-        # print("\nToken decode time summary:")
-        # for i, t in enumerate(self.token_decode_times):
-        #     print(f"Token {i}: {t*1000:.2f}ms")
-        # print(f"Total decode time: {decode_time*1000:.2f}ms")
-        # print(f"Average per token: {decode_time*1000/len(self.token_decode_times):.2f}ms")
-        # print("--------------------")
+        print("\nToken decode time summary:")
+        for i, t in enumerate(self.token_decode_times):
+            print(f"Token {i}: {t*1000:.2f}ms")
+        print(f"Total decode time: {decode_time*1000:.2f}ms")
+        print(f"Average per token: {decode_time*1000/len(self.token_decode_times):.2f}ms")
+        print("--------------------")
        
-        # print(f"Input: {text}")
-        # print(f"Output: {decode_strings[max_ids[0]]}")
-        # prof.stop()
+        print(f"Input: {text}")
+        print(f"Output: {decode_strings[max_ids[0]]}")
+        prof.stop()
         return (
             prefill_time,
             decode_time,
@@ -835,19 +835,19 @@ class FiddlerDeepSeekV2:
                 'expert_time': self.expert_time_stats,
                 'layer_time': self.layer_time_stats,
                 'outputs': decode_strings,  # 添加输出文本
-                # 'layer_time_details': self.layer_time_details,  # 添加细粒度时间统计
+                'layer_time_details': self.layer_time_details,  # 添加细粒度时间统计
                 'expert_hot_stats': self.get_expert_stats(), 
-                # 'layer_time_avg': {
-                #     i: self.layer_time_accumulator[i] / max(1, len([x for x in self.layer_time_stats if x['layer_id'] == i]))
-                #     for i in range(1, 27)
-                # },
-                # 'layer_time_avg_details': {  # 添加分类平均时间
-                #     case: {
-                #         i: self.layer_time_accumulator_details[case][i] / max(1, len([x for x in self.layer_time_details[case] if x['layer_id'] == i]))
-                #         for i in range(1, 27)
-                #     }
-                #     for case in ['all_gpu', 'all_cpu', 'mixed']
-                # }
+                'layer_time_avg': {
+                    i: self.layer_time_accumulator[i] / max(1, len([x for x in self.layer_time_stats if x['layer_id'] == i]))
+                    for i in range(1, 27)
+                },
+                'layer_time_avg_details': {  # 添加分类平均时间
+                    case: {
+                        i: self.layer_time_accumulator_details[case][i] / max(1, len([x for x in self.layer_time_details[case] if x['layer_id'] == i]))
+                        for i in range(1, 27)
+                    }
+                    for case in ['all_gpu', 'all_cpu', 'mixed']
+                }
             }
         )
     def tokenize(self, text, input_token):
@@ -994,15 +994,15 @@ class FiddlerDeepSeekV2:
                     self_attn_weights = None
                     present_key_value = None
                 # inps.shape: (batch_size, seq_len/token_num, embed_dim)
-                # if self.past_key_values is None:
-                #     self.past_key_values = [None] * self.n_layer
+                if self.past_key_values is None:
+                    self.past_key_values = [None] * self.n_layer
                 
-                # # 存储当前层的缓存
-                # self.past_key_values[i_layer] = present_key_value            
+                # 存储当前层的缓存
+                self.past_key_values[i_layer] = present_key_value            
                 inps = inps_residual + inps
                 inps_residual = inps
                 inps = layer.post_attention_layernorm(inps)
-                # inps = inps.view(-1, hidden_dim)
+                inps = inps.view(-1, hidden_dim)
                 # inps.shape: (batch_size*seq_len*embed_dim/hidden_dim, hidden_dim)
                 layer_idx=i_layer
                 if layer_idx not in self.layer_data:
@@ -1089,8 +1089,8 @@ class FiddlerDeepSeekV2:
                 sorted_experts = list(zip(filtered_expert_ids, filtered_token_counts))
                     
                 # 初始化变量
-                e = 1.39   # 搬运开销(m秒)
-                tg = 0.95   # GPU计算开销(m秒)
+                e = 1.11   # 搬运开销(m秒) - 初始值 1.39 测量值: 1.1141
+                tg = 0.20   # GPU计算开销(m秒) - 初始值 0.95 测量值: ~0.1-0.25
                 n = len(sorted_experts)
                 ondemand_experts = []
                 # if self.is_decode:
@@ -1559,18 +1559,18 @@ class FiddlerDeepSeekV2:
                     parallel_degree = (gpu_time + cpu_time) / parallel_time if parallel_time > 0 else 1.0
 
                     # 打印时间统计（已注释以提高性能）
-                    # if self.is_decode:
-                    #     stats_text = f"\nLayer {i_layer} Thread Time Stats:\n"
-                    #     stats_text += f"GPU Thread Time: {gpu_time*1000:.2f}ms\n"
-                    #     stats_text += f"CPU Thread Time: {cpu_time*1000:.2f}ms\n"
-                    #     stats_text += f"Parallel Time: {parallel_time*1000:.2f}ms\n"
-                    #     stats_text += f"Parallel Degree: {parallel_degree:.2f}x\n"
-                    #     print(stats_text)
+                    if self.is_decode:
+                        stats_text = f"\nLayer {i_layer} Thread Time Stats:\n"
+                        stats_text += f"GPU Thread Time: {gpu_time*1000:.2f}ms\n"
+                        stats_text += f"CPU Thread Time: {cpu_time*1000:.2f}ms\n"
+                        stats_text += f"Parallel Time: {parallel_time*1000:.2f}ms\n"
+                        stats_text += f"Parallel Degree: {parallel_degree:.2f}x\n"
+                        # print(stats_text)
                         
-                    #     # 写入到临时日志文件
-                    #     os.makedirs('./log', exist_ok=True)
-                    #     with open('./log/linshi.txt', 'a') as f:
-                    #         f.write(stats_text)
+                        # 写入到临时日志文件
+                        os.makedirs('./log', exist_ok=True)
+                        with open('./log/linshi.txt', 'a') as f:
+                            f.write(stats_text)
                     # 合并GPU处理结果
                     # 合并CPU处理结果（需要移动到GPU）
                     for mask_index, expert_output in cpu_results:

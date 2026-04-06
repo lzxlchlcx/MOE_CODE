@@ -23,12 +23,24 @@ def plot_expert_performance(model):
     model.dev = torch.device("cuda:0")
     if args.model=="/home/share/bz/model/Mixtral-8x7B-v0.1":
         model_type = 'mixtral'
-    elif args.model=="/home/share/bz/model/Qwen3-30B-A3B":
+    elif args.model=="/mnt/g/Models/Qwen3-30B-A3B" or args.model=="/mnt/g/Models/Qwen3-30B-A3B/":
         model_type = 'qwen'
-    elif args.model=="/home/share/bz/model/DeepSeek-V2-Lite":
+    elif args.model=="/mnt/g/Models/DeepSeek-v2-lite-chat":
         model_type = 'deepseek'
-    else:
+    elif args.model=="/home/share/bz/model/Moonlight-16B-A3B-Instruct":
         model_type = 'moon'
+    else:
+        # 通过关键词判断
+        if 'Mixtral' in args.model or 'mixtral' in args.model:
+            model_type = 'mixtral'
+        elif 'Qwen' in args.model or 'qwen' in args.model:
+            model_type = 'qwen'
+        elif 'DeepSeek' in args.model or 'deepseek' in args.model:
+            model_type = 'deepseek'
+        elif 'Moonlight' in args.model or 'moon' in args.model:
+            model_type = 'moon'
+        else:
+            model_type = 'moon'
     if model_type == 'mixtral':
         first_layer_experts = model.model.layers[1].block_sparse_moe.experts
         n_expert = len(model.model.layers[0].block_sparse_moe.experts)
@@ -193,7 +205,7 @@ def plot_expert_performance(model):
     plt.plot(token_counts, np.array(attn_times) * 1000,
              label='Self-Attention on GPU', marker='^', linestyle='-')    
 
-    with open(f'micro{model_type}real.txt', 'a') as f:
+    with open(f'micro{model_type}_New.txt', 'a') as f:
         # 更新表头
         f.write("Token Count,Expert Transfer Time(ms),GPU Computation Time(ms),CPU Computation Time(ms),Self-Attention Time(ms)\n")
         for i, token_count in enumerate(token_counts):
@@ -367,7 +379,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cache",
         type=int,
-        default=2,
+        default=1,
         choices=[0, 1],
         help="0: execute at GPU (baseline), 1: offload to CPU.",
     )    
@@ -387,15 +399,32 @@ if __name__ == "__main__":
     if args.model=="/home/share/bz/model/Mixtral-8x7B-v0.1":
         model = FiddlerMixtral(args)
         prefix="mix"
-    elif args.model=="/home/share/bz/model/Qwen3-30B-A3B":
+    elif args.model=="/mnt/g/Models/Qwen3-30B-A3B" or args.model=="/mnt/g/Models/Qwen3-30B-A3B/":
         model = FiddlerQwen(args)
         prefix="qwen"
-    elif args.model=="/home/share/bz/model/DeepSeek-V2-Lite":
+    elif args.model=="/mnt/g/Models/DeepSeek-v2-lite-chat":
         model = FiddlerDeepSeekV2(args)
         prefix="deep"
+    elif args.model=="/home/share/bz/model/Moonlight-16B-A3B-Instruct":
+        model = FiddlerMoon(args)
+        prefix="moon"
     else:
-        model = FiddlerMoon(args)   
-        prefix="moon"     
+        # 通过关键词判断
+        if 'Mixtral' in args.model or 'mixtral' in args.model:
+            model = FiddlerMixtral(args)
+            prefix="mix"
+        elif 'Qwen' in args.model or 'qwen' in args.model:
+            model = FiddlerQwen(args)
+            prefix="qwen"
+        elif 'DeepSeek' in args.model or 'deepseek' in args.model:
+            model = FiddlerDeepSeekV2(args)
+            prefix="deep"
+        elif 'Moonlight' in args.model or 'moon' in args.model:
+            model = FiddlerMoon(args)
+            prefix="moon"
+        else:
+            model = FiddlerMoon(args)
+            prefix="moon"    
     plot_expert_performance(model)
 
     # def weight_copy_parallel(model, from_cpu=True, num_experts=8):
