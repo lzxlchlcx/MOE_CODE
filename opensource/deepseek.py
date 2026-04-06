@@ -603,20 +603,20 @@ class FiddlerDeepSeekV2:
         print(f"  模型总专家数: {(self.n_layer-1) * self.n_expert}")
         
         # 根据batch_size使用不同策略
-        if self.batch_size == 64:
-            n_expert = 893
-        elif self.batch_size == 32:
-            n_expert = 993
-        elif self.batch_size == 16:
-            n_expert = 693
-        else:
-            # 计算能容纳的专家数量，不使用硬编码的magic number
-            calculated_n = int(free_mem / expert_mem_bytes)
-            # 预留一定buffer给KV缓存和中间计算，根据batch_size调整
-            buffer_factor = 0.9  # 使用70%的可用显存
-            n_expert = int(calculated_n * buffer_factor)
-            print(f"  计算的专家数量(无buffer): {calculated_n}")
-            print(f"  buffer_factor: {buffer_factor}")
+        # if self.batch_size == 64:
+        #     n_expert = 893
+        # elif self.batch_size == 32:
+        #     n_expert = 993
+        # elif self.batch_size == 16:
+        #     n_expert = 693
+        # else:
+        # 计算能容纳的专家数量，不使用硬编码的magic number
+        calculated_n = int(free_mem / expert_mem_bytes)
+        # 预留一定buffer给KV缓存和中间计算，根据batch_size调整
+        buffer_factor = 0.9  # 使用70%的可用显存
+        n_expert = int(calculated_n * buffer_factor)
+        print(f"  计算的专家数量(无buffer): {calculated_n}")
+        print(f"  buffer_factor: {buffer_factor}")
         
         # 确保返回正数
         n_expert = max(n_expert, 1)
@@ -994,11 +994,11 @@ class FiddlerDeepSeekV2:
                     self_attn_weights = None
                     present_key_value = None
                 # inps.shape: (batch_size, seq_len/token_num, embed_dim)
-                if self.past_key_values is None:
-                    self.past_key_values = [None] * self.n_layer
+                # if self.past_key_values is None:
+                #     self.past_key_values = [None] * self.n_layer
                 
-                # 存储当前层的缓存
-                self.past_key_values[i_layer] = present_key_value            
+                # # 存储当前层的缓存
+                # self.past_key_values[i_layer] = present_key_value            
                 inps = inps_residual + inps
                 inps_residual = inps
                 inps = layer.post_attention_layernorm(inps)
@@ -1560,11 +1560,12 @@ class FiddlerDeepSeekV2:
 
                     # 打印时间统计（已注释以提高性能）
                     if self.is_decode:
-                        stats_text = f"\nLayer {i_layer} Thread Time Stats:\n"
-                        stats_text += f"GPU Thread Time: {gpu_time*1000:.2f}ms\n"
-                        stats_text += f"CPU Thread Time: {cpu_time*1000:.2f}ms\n"
-                        stats_text += f"Parallel Time: {parallel_time*1000:.2f}ms\n"
-                        stats_text += f"Parallel Degree: {parallel_degree:.2f}x\n"
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        stats_text = f"\n[{timestamp}] Layer {i_layer} Thread Time Stats:\n"
+                        stats_text += f"[{timestamp}] GPU Thread Time: {gpu_time*1000:.2f}ms\n"
+                        stats_text += f"[{timestamp}] CPU Thread Time: {cpu_time*1000:.2f}ms\n"
+                        stats_text += f"[{timestamp}] Parallel Time: {parallel_time*1000:.2f}ms\n"
+                        stats_text += f"[{timestamp}] Parallel Degree: {parallel_degree:.2f}x\n"
                         # print(stats_text)
                         
                         # 写入到临时日志文件
@@ -1639,15 +1640,16 @@ class FiddlerDeepSeekV2:
             avg_cpu_ratio = (total_cpu_time / avg_layer_time * 100) if avg_layer_time > 0 else 0
             # print(f"平均每层时间: {avg_layer_time*1000:.2f}ms (CPU专家平均占比: {avg_cpu_ratio:.1f}%)")
             os.makedirs('./log', exist_ok=True)
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             with open('./log/expert_stats.txt', 'a') as f:
-                f.write("\n各层处理时间统计(ms):\n")
+                f.write(f"\n[{timestamp}] 各层处理时间统计(ms):\n")
                 for i in range(1, 27):
                     cpu_time = self.cpu_expert_time_per_layer[i] * 1000
                     layer_time = layer_times[i] * 1000
                     layer_time_mids = layer_times_mid[i] * 1000
                     layer_time_finals = layer_times_final[i] * 1000
                     # cpu_ratio = (cpu_time / layer_time * 100) if layer_time > 0 else 0
-                    f.write(f"层 {i}: {layer_time:.2f}ms (, 中间层: {layer_time_mids:.2f}ms, 最终层: {layer_time_finals:.2f}ms, %)\n")
+                    f.write(f"[{timestamp}] 层 {i}: {layer_time:.2f}ms (, 中间层: {layer_time_mids:.2f}ms, 最终层: {layer_time_finals:.2f}ms, %)\n")
                     # f.write(f"层 {i}: {layer_time:.2f}ms (CPU专家: {cpu_time:.2f}ms, 占比: {cpu_ratio:.1f}%)\n")
                 
                 # f.write(f"平均每层时间: {avg_layer_time*1000:.2f}ms (CPU专家平均占比: {avg_cpu_ratio:.1f}%)\n")

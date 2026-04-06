@@ -3,15 +3,21 @@
 # 设置CUDA设备
 export CUDA_VISIBLE_DEVICES=0
 
+# 清空日志文件
+> ./log/linshi.txt
+> ./log/expert_stats.txt
+
 # 定义模型列表和batch_size列表
 MODELS=(
     "/mnt/g/Models/DeepSeek-v2-lite-chat"
+    # /mnt/g/Models/Qwen3-30B-A3B/
     # "/home/share/bz/model/Mixtral-8x7B-v0.1"
     # "/home/share/bz/model/Qwen3-30B-A3B" 
     # "/home/share/bz/model/Moonlight-16B-A3B-Instruct"
 )
 # BATCH_SIZES=(4 8 16 32 64)
-BATCH_SIZES=(1 4 8 16)
+# BATCH_SIZES=(1 4 8 16)
+BATCH_SIZES=(1)
 
 # 遍历所有模型
 for model in "${MODELS[@]}"; do

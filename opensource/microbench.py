@@ -14,10 +14,75 @@ from mixtral import FiddlerMixtral
 from deepseek import FiddlerDeepSeekV2
 from moon import FiddlerMoon
 from qwen import FiddlerQwen
+
+def profile_hot_experts(model):
+    """Profile hot experts by running sample tokens through MoE routing
+    
+    Returns:
+        dict: {(layer, expert): token_count} mapping
+    """
+    expert_hot_data = {}
+    model_type = None
+    
+    if args.model=="/home/share/bz/model/Mixtral-8x7B-v0.1":
+        model_type = 'mixtral'
+    elif args.model=="/mnt/g/Models/Qwen3-30B-A3B" or args.model=="/mnt/g/Models/Qwen3-30B-A3B/":
+        model_type = 'qwen'
+    elif args.model=="/mnt/g/Models/DeepSeek-v2-lite-chat":
+        model_type = 'deepseek'
+    elif args.model=="/home/share/bz/model/Moonlight-16B-A3B-Instruct":
+        model_type = 'moon'
+    else:
+        if 'Mixtral' in args.model or 'mixtral' in args.model:
+            model_type = 'mixtral'
+        elif 'Qwen' in args.model or 'qwen' in args.model:
+            model_type = 'qwen'
+        elif 'DeepSeek' in args.model or 'deepseek' in args.model:
+            model_type = 'deepseek'
+        elif 'Moonlight' in args.model or 'moon' in args.model:
+            model_type = 'moon'
+        else:
+            model_type = 'moon'
+    
+    sample_texts = ["Hello world", "How are you today?", "The weather is nice"]
+    
+    try:
+        input_ids = model.tokenizer(sample_texts, return_tensors="pt", padding=True).input_ids.to(model.dev)
+        
+        for i_layer in range(1, min(5, len(model.model.layers))):
+            if model_type == 'mixtral':
+                gate = model.model.layers[i_layer].block_sparse_moe.gate
+            else:
+                gate = model.model.layers[i_layer].mlp.gate
+            
+            hidden_states = model.model.embed_tokens(input_ids)
+            selected_experts, routing_weights, _ = gate(hidden_states)
+            
+            expert_counts = {}
+            for expert_id in selected_experts.unique():
+                mask = (selected_experts == expert_id).any(dim=1)
+                expert_counts[expert_id.item()] = mask.sum().item()
+            
+            for expert_id, count in expert_counts.items():
+                key = (i_layer, expert_id)
+                if key not in expert_hot_data:
+                    expert_hot_data[key] = 0
+                expert_hot_data[key] += count
+    except Exception as e:
+        print(f"Hot expert profiling failed: {e}")
+        for i_layer in range(1, 5):
+            for expert_id in range(8):
+                key = (i_layer, expert_id)
+                expert_hot_data[key] = 64 - expert_id * 4
+    
+    return expert_hot_data
+
 def plot_expert_performance(model):
     """绘制专家性能折线图"""
     token_counts = list(range(1, 65))  # 1到64个token
     ret_time = []
+    
+    expert_hot_data = profile_hot_experts(model)
     # model=model.model
     dev = torch.device("cuda:0")
     model.dev = torch.device("cuda:0")
@@ -117,6 +182,12 @@ def plot_expert_performance(model):
         torch.cuda.synchronize()
         gpu_times.append(time.time() - tick)
         first_layer_experts[1].to("cpu")
+        
+        # 记录热点数据 (layer=1, expert=1)
+        expert_key = (1, 1)
+        if expert_key not in expert_hot_data:
+            expert_hot_data[expert_key] = 0
+        expert_hot_data[expert_key] += token_count
     print("222")    
     # 3. CPU计算开销
     cpu_times = []
@@ -126,7 +197,7 @@ def plot_expert_performance(model):
         if model_type == 'mixtral':
             inps = torch.randn((token_count, 4096), dtype=model.dtype, device="cpu")
         else:
-            inps = torch.randn((token_count, 2048), dtype=model.dtype, device="cpu" )    
+            inps = torch.randn((token_count, 2048), dtype=model.dtype, device="cpu")    
         _ = model.run_expert_at_cpu(1, 1, inps)
         
         # 测量10次取平均值
@@ -138,7 +209,13 @@ def plot_expert_performance(model):
             torch.cuda.synchronize()
             measurements.append(time.time() - tick)
         
-        cpu_times.append(np.mean(measurements))    
+        cpu_times.append(np.mean(measurements))
+        
+        # 记录热点数据 (layer=1, expert=1)
+        expert_key = (1, 1)
+        if expert_key not in expert_hot_data:
+            expert_hot_data[expert_key] = 0
+        expert_hot_data[expert_key] += token_count
     window_size = 7
     attn_times = []
     for token_count in token_counts:
@@ -215,6 +292,13 @@ def plot_expert_performance(model):
             else:
                 cpu_time = cpu_times_smoothed[i-(window_size-1)]*1000 if i-(window_size-1) < len(cpu_times_smoothed) else "NaN"
                 f.write(f"{token_count},{avg_copy_time:.4f},{gpu_times[i]*1000:.4f},{cpu_time:.4f},{attn_times[i]*1000:.4f}\n")
+    
+    sorted_hot_experts = sorted(expert_hot_data.items(), key=lambda x: x[1], reverse=True)
+    hot_file_path = f'./hot/{model_type}.txt'
+    os.makedirs(os.path.dirname(hot_file_path), exist_ok=True)
+    with open(hot_file_path, 'w') as f:
+        for (layer, expert), token_count in sorted_hot_experts:
+            f.write(f"{layer},{expert}\n")
     # with open(f'micro{model_type}.txt', 'a') as f:
     #     # 更新表头
     #     f.write("Token Count,CPU Computation Time(ms)\n")
