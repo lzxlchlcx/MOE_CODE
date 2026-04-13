@@ -1,0 +1,23 @@
+# 临时文件
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 测试结果和日志
+opensource/log/
+opensource/result/
+opensource/test.txt
+opensource/test_*.sh
+opensource/ioreal_*.png
+opensource/micro*.txt
+
+# 临时数据
+opensource/Figure_*.png
+
+# 旧文件（已融合到CLAUDE.md）
+AGENTS.md
+kilo/
+
+# 其他临时
+PDScope/

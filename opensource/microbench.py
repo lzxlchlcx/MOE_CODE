@@ -1,4 +1,12 @@
-"""Microbenchmarking for CPU offloading"""
+"""
+Microbenchmarking for CPU offloading
+
+运行微基准测试，生成:
+1. micro*.txt: CPU时间查找表
+2. ioreal_*.png: 性能图表
+3. hot/*.txt: 热点专家列表
+4. configs/system_config_*.json: 系统配置JSON(新)
+"""
 
 import argparse
 import copy
@@ -15,54 +23,53 @@ from deepseek import FiddlerDeepSeekV2
 from moon import FiddlerMoon
 from qwen import FiddlerQwen
 
-def profile_hot_experts(model):
-    """Profile hot experts by running sample tokens through MoE routing
-    
-    Returns:
-        dict: {(layer, expert): token_count} mapping
-    """
+from config import (
+    ModelConfig,
+    SystemConfig,
+    get_default_config,
+    auto_detect_gpu_info,
+)
+
+
+def get_model_name_from_path(model_path):
+    """从模型路径推断模型名"""
+    model_path_lower = model_path.lower()
+    if "mixtral" in model_path_lower:
+        return "mixtral"
+    elif "qwen" in model_path_lower:
+        return "qwen"
+    elif "deepseek" in model_path_lower:
+        return "deepseek"
+    elif "moonlight" in model_path_lower or "moon" in model_path_lower:
+        return "moon"
+    return "deepseek"
+
+
+def profile_hot_experts(model, model_name):
+    """Profile hot experts by running sample tokens through MoE routing"""
     expert_hot_data = {}
-    model_type = None
-    
-    if args.model=="/home/share/bz/model/Mixtral-8x7B-v0.1":
-        model_type = 'mixtral'
-    elif args.model=="/mnt/g/Models/Qwen3-30B-A3B" or args.model=="/mnt/g/Models/Qwen3-30B-A3B/":
-        model_type = 'qwen'
-    elif args.model=="/mnt/g/Models/DeepSeek-v2-lite-chat":
-        model_type = 'deepseek'
-    elif args.model=="/home/share/bz/model/Moonlight-16B-A3B-Instruct":
-        model_type = 'moon'
-    else:
-        if 'Mixtral' in args.model or 'mixtral' in args.model:
-            model_type = 'mixtral'
-        elif 'Qwen' in args.model or 'qwen' in args.model:
-            model_type = 'qwen'
-        elif 'DeepSeek' in args.model or 'deepseek' in args.model:
-            model_type = 'deepseek'
-        elif 'Moonlight' in args.model or 'moon' in args.model:
-            model_type = 'moon'
-        else:
-            model_type = 'moon'
-    
+
     sample_texts = ["Hello world", "How are you today?", "The weather is nice"]
-    
+
     try:
-        input_ids = model.tokenizer(sample_texts, return_tensors="pt", padding=True).input_ids.to(model.dev)
-        
+        input_ids = model.tokenizer(
+            sample_texts, return_tensors="pt", padding=True
+        ).input_ids.to(model.dev)
+
         for i_layer in range(1, min(5, len(model.model.layers))):
-            if model_type == 'mixtral':
+            if model_name == "mixtral":
                 gate = model.model.layers[i_layer].block_sparse_moe.gate
             else:
                 gate = model.model.layers[i_layer].mlp.gate
-            
+
             hidden_states = model.model.embed_tokens(input_ids)
             selected_experts, routing_weights, _ = gate(hidden_states)
-            
+
             expert_counts = {}
             for expert_id in selected_experts.unique():
                 mask = (selected_experts == expert_id).any(dim=1)
                 expert_counts[expert_id.item()] = mask.sum().item()
-            
+
             for expert_id, count in expert_counts.items():
                 key = (i_layer, expert_id)
                 if key not in expert_hot_data:
@@ -74,133 +81,91 @@ def profile_hot_experts(model):
             for expert_id in range(8):
                 key = (i_layer, expert_id)
                 expert_hot_data[key] = 64 - expert_id * 4
-    
+
     return expert_hot_data
 
-def plot_expert_performance(model):
-    """绘制专家性能折线图"""
-    token_counts = list(range(1, 65))  # 1到64个token
+
+def plot_expert_performance(model, model_name, output_dir="./configs"):
+    """绘制专家性能折线图并生成系统配置"""
+    token_counts = list(range(1, 65))
     ret_time = []
-    
-    expert_hot_data = profile_hot_experts(model)
-    # model=model.model
+
+    expert_hot_data = profile_hot_experts(model, model_name)
     dev = torch.device("cuda:0")
     model.dev = torch.device("cuda:0")
-    if args.model=="/home/share/bz/model/Mixtral-8x7B-v0.1":
-        model_type = 'mixtral'
-    elif args.model=="/mnt/g/Models/Qwen3-30B-A3B" or args.model=="/mnt/g/Models/Qwen3-30B-A3B/":
-        model_type = 'qwen'
-    elif args.model=="/mnt/g/Models/DeepSeek-v2-lite-chat":
-        model_type = 'deepseek'
-    elif args.model=="/home/share/bz/model/Moonlight-16B-A3B-Instruct":
-        model_type = 'moon'
-    else:
-        # 通过关键词判断
-        if 'Mixtral' in args.model or 'mixtral' in args.model:
-            model_type = 'mixtral'
-        elif 'Qwen' in args.model or 'qwen' in args.model:
-            model_type = 'qwen'
-        elif 'DeepSeek' in args.model or 'deepseek' in args.model:
-            model_type = 'deepseek'
-        elif 'Moonlight' in args.model or 'moon' in args.model:
-            model_type = 'moon'
-        else:
-            model_type = 'moon'
-    if model_type == 'mixtral':
+
+    if model_name == "mixtral":
         first_layer_experts = model.model.layers[1].block_sparse_moe.experts
         n_expert = len(model.model.layers[0].block_sparse_moe.experts)
-    else:  # qwen/moon/deepseek
+    else:
         first_layer_experts = model.model.layers[1].mlp.experts
-        n_expert = len(model.model.layers[1].mlp.experts)  
-    n_shared_experts = 2
-    expert_placeholder = copy.deepcopy(first_layer_experts[0]).to(dev)        
+        n_expert = len(model.model.layers[1].mlp.experts)
 
-    # 1. 专家搬运开销 (固定值)
+    n_shared_experts = 2
+    expert_placeholder = copy.deepcopy(first_layer_experts[0]).to(dev)
+
     copy_times = []
     for _ in token_counts:
-        # 测量一次搬运时间
-        # expert_placeholder = copy.deepcopy(model.model.layers[0].block_sparse_moe.experts[0]).to(model.dev)
-        # model.model.layers[0].block_sparse_moe.experts[0].to("cpu")
-        # for name in ['w1', 'w2', 'w3']:
-        #     w = getattr(model.model.layers[0].block_sparse_moe.experts[0], name)
-        #     w.weight.data = w.weight.data.pin_memory()
-
-        for i in range(2,3):
+        for i in range(2, 3):
             first_layer_experts[i].to("cpu")
-            if model_type == 'mixtral': 
-                for name in ['w1', 'w2', 'w3']:
+            if model_name == "mixtral":
+                for name in ["w1", "w2", "w3"]:
                     w = getattr(first_layer_experts[i], name)
-                    src_weight_data_tensor = w.weight.data 
+                    src_weight_data_tensor = w.weight.data
                     pinned = src_weight_data_tensor.pin_memory()
                     w.weight.data = pinned
-            else: 
-                for name in ['gate_proj', 'up_proj', 'down_proj']:
+            else:
+                for name in ["gate_proj", "up_proj", "down_proj"]:
                     w = getattr(first_layer_experts[i], name)
-                    src_weight_data_tensor = w.weight.data 
+                    src_weight_data_tensor = w.weight.data
                     pinned = src_weight_data_tensor.pin_memory()
-                    w.weight.data = pinned      
-            # print("111")
+                    w.weight.data = pinned
+
             torch.cuda.synchronize()
             tick = time.time()
-            if model_type == 'mixtral': 
-                for name in ['w1', 'w2', 'w3']:
+            if model_name == "mixtral":
+                for name in ["w1", "w2", "w3"]:
                     dst = getattr(expert_placeholder, name).weight.data
                     src = getattr(first_layer_experts[i], name).weight.data
                     dst.copy_(src)
             else:
-                for name in ['gate_proj', 'up_proj', 'down_proj']:
+                for name in ["gate_proj", "up_proj", "down_proj"]:
                     dst = getattr(expert_placeholder, name).weight.data
                     src = getattr(first_layer_experts[i], name).weight.data
-                    dst.copy_(src)                
+                    dst.copy_(src)
             torch.cuda.synchronize()
             copy_times.append(time.time() - tick)
 
-        # torch.cuda.synchronize()
-        # tick = time.time()
-        # for name in ['w1', 'w2', 'w3']:
-        #     dst = getattr(expert_placeholder, name).weight.data
-        #     src = getattr(model.model.layers[0].block_sparse_moe.experts[0], name).weight.data
-        #     dst.copy_(src)
-        # torch.cuda.synchronize()
-        # copy_times.append(time.time() - tick)
-    
-    # 2. GPU计算开销
     gpu_times = []
     for token_count in token_counts:
-        # 预热
         first_layer_experts[1].to(model.dev)
-        if model_type == 'mixtral':
+        if model_name == "mixtral":
             inps = torch.randn((token_count, 4096), dtype=model.dtype, device=model.dev)
         else:
             inps = torch.randn((token_count, 2048), dtype=model.dtype, device=model.dev)
         _ = first_layer_experts[1](inps)
-        
-        # 正式测量
+
         torch.cuda.synchronize()
         tick = time.time()
         _ = first_layer_experts[1](inps)
         torch.cuda.synchronize()
         gpu_times.append(time.time() - tick)
         first_layer_experts[1].to("cpu")
-        
-        # 记录热点数据 (layer=1, expert=1)
+
         expert_key = (1, 1)
         if expert_key not in expert_hot_data:
             expert_hot_data[expert_key] = 0
         expert_hot_data[expert_key] += token_count
-    print("222")    
-    # 3. CPU计算开销
+
     cpu_times = []
     for token_count in token_counts:
-        # 预热
         first_layer_experts[1].to("cpu")
-        if model_type == 'mixtral':
+        if model_name == "mixtral":
             inps = torch.randn((token_count, 4096), dtype=model.dtype, device="cpu")
         else:
-            inps = torch.randn((token_count, 2048), dtype=model.dtype, device="cpu")    
+            inps = torch.randn((token_count, 2048), dtype=model.dtype, device="cpu")
         _ = model.run_expert_at_cpu(1, 1, inps)
-        
-        # 测量10次取平均值
+
         measurements = []
         for _ in range(20):
             torch.cuda.synchronize()
@@ -208,248 +173,140 @@ def plot_expert_performance(model):
             _ = model.run_expert_at_cpu(1, 1, inps)
             torch.cuda.synchronize()
             measurements.append(time.time() - tick)
-        
+
         cpu_times.append(np.mean(measurements))
-        
-        # 记录热点数据 (layer=1, expert=1)
+
         expert_key = (1, 1)
         if expert_key not in expert_hot_data:
             expert_hot_data[expert_key] = 0
         expert_hot_data[expert_key] += token_count
+
     window_size = 7
     attn_times = []
     for token_count in token_counts:
-        # 准备输入
-        if model_type == 'mixtral':
-            inps = torch.randn((1, token_count, 4096), dtype=model.dtype, device=model.dev)
+        if model_name == "mixtral":
+            inps = torch.randn(
+                (1, token_count, 4096), dtype=model.dtype, device=model.dev
+            )
         else:
-            inps = torch.randn((1, token_count, 2048), dtype=model.dtype, device=model.dev )
-        attention_mask = torch.ones((1, 1, 1, token_count), 
-                                   dtype=torch.bool, device=model.dev)
-        position_ids = torch.arange(token_count, dtype=torch.long, device=model.dev).unsqueeze(0)
-        # position_embeddings = model.model.rotary_emb(inps, position_ids)        
-        # 预热
-        layer = model.model.layers[0]
-        # _ = layer.self_attn(
-        #     hidden_states=inps,
-        #     attention_mask=attention_mask,
-        #         position_embeddings=position_embeddings,  # 传递嵌入后的位置信息
-        #     past_key_value=None,
-        #     use_cache=False
-        # )
-        
-        # 正式测量
-        torch.cuda.synchronize()
-        tick = time.time()
-        # _ = layer.self_attn(
-        #     hidden_states=inps,
-        #     attention_mask=attention_mask,
-        #         position_embeddings=position_embeddings,  # 传递嵌入后的位置信息
-        #     past_key_value=None,
-        #     use_cache=False
-        # )
-        # torch.cuda.synchronize()
-        attn_times.append(time.time() - tick)
+            inps = torch.randn(
+                (1, token_count, 2048), dtype=model.dtype, device=model.dev
+            )
+        attention_mask = torch.ones(
+            (1, 1, 1, token_count), dtype=torch.bool, device=model.dev
+        )
+        position_ids = torch.arange(
+            token_count, dtype=torch.long, device=model.dev
+        ).unsqueeze(0)
+        attn_times.append(0.0)
 
     plt.figure(figsize=(12, 6))
     avg_gpu_time = np.mean(gpu_times) * 1000
-    # 专家搬运开销 (取平均值)
-    avg_copy_time = np.mean(copy_times) * 1000    
+    avg_copy_time = np.mean(copy_times) * 1000
 
+    plt.plot(
+        token_counts,
+        [avg_copy_time] * len(token_counts),
+        label=f"Expert Transfer (Avg: {avg_copy_time:.2f}ms)",
+        linestyle="--",
+    )
 
-    plt.plot(token_counts, [avg_copy_time] * len(token_counts), 
-             label=f'Expert Transfer (Avg: {avg_copy_time:.2f}ms)', linestyle='--')
-    
-    # GPU计算开销
-    plt.plot(token_counts, np.array(gpu_times) * 1000, 
-             label=f'Expert computation on GPU (Avg: {avg_gpu_time:.2f}ms)', marker='o')
-    
-    # CPU计算开销
-    # plt.errorbar(token_counts, np.array(cpu_times) * 1000, 
-    #              yerr=np.array(cpu_stds) * 1000, 
-    #              label='CPU Computation', marker='s', 
-    #              capsize=3, elinewidth=1, markeredgewidth=1)
-    window_size = 7
-    cpu_times_smoothed = np.convolve(cpu_times, np.ones(window_size)/window_size, mode='valid')
-    
-    # 调整token_counts以匹配平滑后的数据长度
-    token_counts_smoothed = token_counts[window_size-1:]
-    
-    # 绘制平滑后的CPU计算开销
-    plt.plot(token_counts_smoothed, np.array(cpu_times_smoothed) * 1000, 
-             label='Expert computation on CPU', marker='s', 
-             linestyle='-', linewidth=2)
-    plt.plot(token_counts, np.array(attn_times) * 1000,
-             label='Self-Attention on GPU', marker='^', linestyle='-')    
+    plt.plot(
+        token_counts,
+        np.array(gpu_times) * 1000,
+        label=f"Expert computation on GPU (Avg: {avg_gpu_time:.2f}ms)",
+        marker="o",
+    )
 
-    with open(f'micro{model_type}_New.txt', 'a') as f:
-        # 更新表头
-        f.write("Token Count,Expert Transfer Time(ms),GPU Computation Time(ms),CPU Computation Time(ms),Self-Attention Time(ms)\n")
+    cpu_times_smoothed = np.convolve(
+        cpu_times, np.ones(window_size) / window_size, mode="valid"
+    )
+    token_counts_smoothed = token_counts[window_size - 1 :]
+
+    plt.plot(
+        token_counts_smoothed,
+        np.array(cpu_times_smoothed) * 1000,
+        label="Expert computation on CPU",
+        marker="s",
+        linestyle="-",
+        linewidth=2,
+    )
+    plt.plot(
+        token_counts,
+        np.array(attn_times) * 1000,
+        label="Self-Attention on GPU",
+        marker="^",
+        linestyle="-",
+    )
+
+    micro_file = f"micro{model_name}.txt"
+    with open(micro_file, "w") as f:
+        f.write(
+            "Token Count,Expert Transfer Time(ms),GPU Computation Time(ms),CPU Computation Time(ms),Self-Attention Time(ms)\n"
+        )
         for i, token_count in enumerate(token_counts):
-            # 前window_size-1个token没有平滑后的CPU时间
-            if i < window_size-1:
-                f.write(f"{token_count},{avg_copy_time:.4f},{gpu_times[i]*1000:.4f},NaN,{attn_times[i]*1000:.4f}\n")
+            if i < window_size - 1:
+                f.write(
+                    f"{token_count},{avg_copy_time:.4f},{gpu_times[i] * 1000:.4f},NaN,{attn_times[i] * 1000:.4f}\n"
+                )
             else:
-                cpu_time = cpu_times_smoothed[i-(window_size-1)]*1000 if i-(window_size-1) < len(cpu_times_smoothed) else "NaN"
-                f.write(f"{token_count},{avg_copy_time:.4f},{gpu_times[i]*1000:.4f},{cpu_time:.4f},{attn_times[i]*1000:.4f}\n")
-    
-    sorted_hot_experts = sorted(expert_hot_data.items(), key=lambda x: x[1], reverse=True)
-    hot_file_path = f'./hot/{model_type}.txt'
+                cpu_time = (
+                    cpu_times_smoothed[i - (window_size - 1)] * 1000
+                    if i - (window_size - 1) < len(cpu_times_smoothed)
+                    else "NaN"
+                )
+                f.write(
+                    f"{token_count},{avg_copy_time:.4f},{gpu_times[i] * 1000:.4f},{cpu_time:.4f},{attn_times[i] * 1000:.4f}\n"
+                )
+
+    sorted_hot_experts = sorted(
+        expert_hot_data.items(), key=lambda x: x[1], reverse=True
+    )
+    hot_file_path = f"./hot/{model_name}.txt"
     os.makedirs(os.path.dirname(hot_file_path), exist_ok=True)
-    with open(hot_file_path, 'w') as f:
+    with open(hot_file_path, "w") as f:
         for (layer, expert), token_count in sorted_hot_experts:
             f.write(f"{layer},{expert}\n")
-    # with open(f'micro{model_type}.txt', 'a') as f:
-    #     # 更新表头
-    #     f.write("Token Count,CPU Computation Time(ms)\n")
-    #     for i, token_count in enumerate(token_counts):
-    #         # 前window_size-1个token没有平滑后的CPU时间
-    #         if i < window_size-1:
-    #             f.write(f"NaN\n")
-    #         else:
-    #             cpu_time = cpu_times_smoothed[i-(window_size-1)]*1000 if i-(window_size-1) < len(cpu_times_smoothed) else "NaN"
-    #             f.write(f"{cpu_time:.4f}\n")
-    # 绘制折线图
 
-    # 绘制折线图
-    plt.xlabel('Token Count')
-    plt.ylabel('Time (ms)')
-    # plt.title('Performance Comparison on V100')
+    plt.xlabel("Token Count")
+    plt.ylabel("Time (ms)")
     plt.legend()
     plt.grid(True)
-    
-    # 保存图表
-    plt.savefig(f'ioreal_{model_type}.png', dpi=300, bbox_inches='tight')
-    plt.show()
 
-def weight_copy(model, from_cpu=True):
-    """Time to copy weights of an expert"""
-    ret_time = []
+    plt.savefig(f"ioreal_{model_name}.png", dpi=300, bbox_inches="tight")
+    # plt.show()
 
-    if from_cpu:
-        expert_placeholder = copy.deepcopy(
-            model.model.layers[0].block_sparse_moe.experts[0]
-        ).to(model.dev)
-        for i in range(32):
-            model.model.layers[i].block_sparse_moe.experts[0].to("cpu")
-            for name in ['w1', 'w2', 'w3']:
-                w = getattr(model.model.layers[i].block_sparse_moe.experts[0], name)
-                src_weight_data_tensor = w.weight.data 
-                pinned = src_weight_data_tensor.pin_memory()
-                w.weight.data = pinned
+    # 生成系统配置
+    cpu_time_table_list = []
+    for i, token_count in enumerate(token_counts):
+        if i < window_size - 1:
+            cpu_time_table_list.append(0.0)
+        else:
+            cpu_time_table_list.append(cpu_times_smoothed[i - (window_size - 1)] * 1000)
 
-            torch.cuda.synchronize()
-            tick = time.time()
-            for name in ['w1', 'w2', 'w3']:
-                dst = getattr(expert_placeholder, name).weight.data
-                src = getattr(model.model.layers[i].block_sparse_moe.experts[0], name).weight.data
-                dst.copy_(src)
-            torch.cuda.synchronize()
-            # torch.cuda.synchronize()
-            # tick = time.time()
-            # expert_placeholder.load_state_dict(
-            #     model.model.layers[i].block_sparse_moe.experts[0].state_dict()
-            # )
-            # torch.cuda.synchronize()
-            ret_time.append(time.time() - tick)
-            model.model.layers[i].block_sparse_moe.experts[0].to("cpu")
-    else:
-        expert_placeholder = copy.deepcopy(
-            model.model.layers[0].block_sparse_moe.experts[0]
-        ).to("cpu")
-        for i in range(16):
-            model.model.layers[i].block_sparse_moe.experts[0].to(model.dev)
-            torch.cuda.synchronize()
-            tick = time.time()
-            expert_placeholder.load_state_dict(
-                model.model.layers[i].block_sparse_moe.experts[0].state_dict()
-            )
-            torch.cuda.synchronize()
-            ret_time.append(time.time() - tick)
-    return np.array(ret_time)
+    gpu_info = auto_detect_gpu_info()
+
+    system_config = SystemConfig(
+        gpu_name=gpu_info["gpu_name"],
+        gpu_memory_gb=gpu_info["gpu_memory_gb"],
+        transfer_time_ms=float(avg_copy_time),
+        gpu_compute_time_ms=float(avg_gpu_time),
+        cpu_time_table=cpu_time_table_list,
+        attention_time_table=[t * 1000 for t in attn_times],
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    config_path = os.path.join(output_dir, f"system_config_{model_name}.json")
+    system_config.save(config_path)
+    print(f"\n系统配置已保存到: {config_path}")
+    print(f"  e (传输时间): {avg_copy_time:.2f} ms")
+    print(f"  tg (GPU计算时间): {avg_gpu_time:.2f} ms")
+    print(f"  GPU: {gpu_info['gpu_name']} ({gpu_info['gpu_memory_gb']:.1f} GB)")
+
+    return system_config
 
 
-def copy_activation(model, from_cpu=True):
-    """Time to copy activations"""
-    ret_time = []
-    if from_cpu:
-        for i in range(32):
-            inps = torch.randn((1, 4096), dtype=model.dtype, device="cpu")
-            torch.cuda.synchronize()
-            tick = time.time()
-            inps = inps.to(model.dev)
-            torch.cuda.synchronize()
-            ret_time.append(time.time() - tick)
-            del inps
-    else:
-        for i in range(32):
-            inps = torch.randn((1, 4096), dtype=model.dtype, device=model.dev)
-            torch.cuda.synchronize()
-            tick = time.time()
-            inps = inps.to("cpu")
-            torch.cuda.synchronize()
-            ret_time.append(time.time() - tick)
-            del inps
-    return np.array(ret_time)
-
-
-def expert_gpu(model, n_expert=1, batch_size=1):
-    """Time to execute an expert at GPU"""
-    ret_time = []
-
-    # warm up
-    model.model.layers[0].block_sparse_moe.experts[7].to(model.dev)
-    inps = torch.randn((batch_size, 4096), dtype=model.dtype, device=model.dev)
-    weights = torch.ones((batch_size, 1), dtype=model.dtype, device=model.dev)
-    inps = model.model.layers[0].block_sparse_moe.experts[7](inps)
-    model.model.layers[0].block_sparse_moe.experts[7].to("cpu")
-    del inps, weights
-    torch.cuda.synchronize()
-
-    for i in range(16):
-        for j in range(n_expert):
-            model.model.layers[i].block_sparse_moe.experts[j].to(model.dev)
-            inps = torch.randn((batch_size, 4096), dtype=model.dtype, device=model.dev)
-            weights = torch.randn((batch_size, 1), dtype=model.dtype, device=model.dev)
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            tick = time.time()
-            inps = model.model.layers[i].block_sparse_moe.experts[j](inps)
-            torch.cuda.synchronize()
-            ret_time.append(time.time() - tick)
-            model.model.layers[i].block_sparse_moe.experts[j].to("cpu")
-            del inps, weights
-    return np.array(ret_time)
-
-
-def expert_cpu(model, n_expert=1, batch_size=1, multithreading=False):
-    """Time to execute an expert at CPU"""
-    ret_time = []
-    # warm up
-    model.model.layers[0].block_sparse_moe.experts[7].to("cpu")
-    inps = torch.randn((batch_size, 4096), dtype=model.dtype, device="cpu")
-    weights = torch.ones((batch_size, 1), dtype=model.dtype, device="cpu")
-    torch.cuda.synchronize()
-    tick = time.time()
-    inps = model.run_expert_at_cpu(0, 7, inps)
-    del inps, weights
-    torch.cuda.synchronize()
-
-    for i in range(32):
-        for j in range(n_expert):
-            model.model.layers[i].block_sparse_moe.experts[j].to("cpu")
-            inps = torch.randn((batch_size, 4096), dtype=model.dtype, device="cpu")
-            weights = torch.randn((batch_size, 1), dtype=model.dtype, device="cpu")
-            torch.cuda.synchronize()
-            tick = time.time()
-            inps = model.run_expert_at_cpu(i, j, inps)
-            torch.cuda.synchronize()
-            ret_time.append(time.time() - tick)
-            del inps, weights
-    return np.array(ret_time)
-
-
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -458,7 +315,7 @@ if __name__ == "__main__":
         "--model",
         type=str,
         default="mistralai/Mixtral-8x7B-v0.1",
-        help="Model path. default `mistralai/Mixtral-8x7B-v0.1`.",
+        help="Model path.",
     )
     parser.add_argument(
         "--cache",
@@ -466,7 +323,7 @@ if __name__ == "__main__":
         default=1,
         choices=[0, 1],
         help="0: execute at GPU (baseline), 1: offload to CPU.",
-    )    
+    )
     parser.add_argument(
         "--cpu-offload",
         type=int,
@@ -475,226 +332,37 @@ if __name__ == "__main__":
         help="0: execute at GPU (baseline), 1: offload to CPU.",
     )
     parser.add_argument("--beam_width", type=int, default=1, help="Beam search number.")
-    parser.add_argument("--batch_size", type=int, default=1, help="Beam search number.")    
-    # args = parser.parse_args()
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size.")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./configs",
+        help="Output directory for config files.",
+    )
     args = parser.parse_args()
 
-    # model = FiddlerMixtral(args)
-    if args.model=="/home/share/bz/model/Mixtral-8x7B-v0.1":
+    model_name = get_model_name_from_path(args.model)
+    print(f"检测到模型类型: {model_name}")
+
+    # 检查模型路径
+    if not os.path.exists(args.model):
+        print(f"\n[WARNING] 模型路径不存在: {args.model}")
+        print("请检查模型路径是否正确。退出。")
+        sys.exit(1)
+
+    if model_name == "mixtral":
         model = FiddlerMixtral(args)
-        prefix="mix"
-    elif args.model=="/mnt/g/Models/Qwen3-30B-A3B" or args.model=="/mnt/g/Models/Qwen3-30B-A3B/":
+    elif model_name == "qwen":
         model = FiddlerQwen(args)
-        prefix="qwen"
-    elif args.model=="/mnt/g/Models/DeepSeek-v2-lite-chat":
+    elif model_name == "deepseek":
         model = FiddlerDeepSeekV2(args)
-        prefix="deep"
-    elif args.model=="/home/share/bz/model/Moonlight-16B-A3B-Instruct":
+    elif model_name == "moon":
         model = FiddlerMoon(args)
-        prefix="moon"
     else:
-        # 通过关键词判断
-        if 'Mixtral' in args.model or 'mixtral' in args.model:
-            model = FiddlerMixtral(args)
-            prefix="mix"
-        elif 'Qwen' in args.model or 'qwen' in args.model:
-            model = FiddlerQwen(args)
-            prefix="qwen"
-        elif 'DeepSeek' in args.model or 'deepseek' in args.model:
-            model = FiddlerDeepSeekV2(args)
-            prefix="deep"
-        elif 'Moonlight' in args.model or 'moon' in args.model:
-            model = FiddlerMoon(args)
-            prefix="moon"
-        else:
-            model = FiddlerMoon(args)
-            prefix="moon"    
-    plot_expert_performance(model)
+        model = FiddlerDeepSeekV2(args)
 
-    # def weight_copy_parallel(model, from_cpu=True, num_experts=8):
-    #     """并行拷贝单层所有专家的权重"""
-    #     ret_time = []
-
-    #     if from_cpu:
-    #         # 创建独立CUDA流（每个专家一个流）
-    #         streams = [torch.cuda.Stream() for _ in range(num_experts)]
-            
-    #         # 预分配所有GPU缓冲区（在主流中预先分配）
-    #         expert_buffers = []
-    #         for j in range(num_experts):
-    #             expert = model.model.layers[0].block_sparse_moe.experts[j].to("cpu")
-    #             w1 = torch.empty_like(expert.w1.weight.data, device='cuda')
-    #             w2 = torch.empty_like(expert.w2.weight.data, device='cuda')
-    #             w3 = torch.empty_like(expert.w3.weight.data, device='cuda')
-    #             expert_buffers.append((w1, w2, w3))
-            
-    #         # 准备CPU数据（固定内存）
-    #         cpu_experts = []
-    #         for j in range(num_experts):
-    #             expert = model.model.layers[0].block_sparse_moe.experts[j].to("cpu")
-    #             for name in ['w1', 'w2', 'w3']:
-    #                 w = getattr(expert, name)
-    #                 w.weight.data = w.weight.data.pin_memory()
-    #             cpu_experts.append(expert)
-
-    #         # 启动异步传输
-    #         torch.cuda.synchronize()
-    #         tick = time.time()
-    #         for j in range(num_experts):
-    #             with torch.cuda.stream(streams[j]):
-    #                 # 并行拷贝三个权重矩阵
-    #                 expert_buffers[j][0].copy_(cpu_experts[j].w1.weight.data, non_blocking=True)
-    #                 expert_buffers[j][1].copy_(cpu_experts[j].w2.weight.data, non_blocking=True)
-    #                 expert_buffers[j][2].copy_(cpu_experts[j].w3.weight.data, non_blocking=True)
-    #         # end_event.record()
-            
-    #         # 等待所有流完成
-    #         # torch.cuda.synchronize()
-    #         torch.cuda.synchronize()
-    #         ret_time.append(time.time() - tick)
-    #         print(ret_time)
-    #         # 清理缓冲区
-    #         for buf in expert_buffers:
-    #             for tensor in buf:
-    #                 del tensor
-    #         torch.cuda.empty_cache()
-
-    #     return np.array(ret_time)
-    # def weight_copy_parallel_optimized(model, from_cpu=True, num_experts=8):
-    #     """集成流分组/矩阵交错/零拷贝的并行传输（兼容旧版本PyTorch）"""
-    #     ret_time = []
-
-    #     if from_cpu and torch.cuda.is_available():
-    #         # 获取GPU DMA引擎数量（默认2，常见显卡为2-4个）
-    #         num_dma_engines = 2  # 可通过nvidia-smi -q查询实际值
-    #         streams = [torch.cuda.Stream() for _ in range(num_dma_engines)]
-            
-    #         # 预分配GPU缓冲区 --------------------------------------------------
-    #         expert_buffers = []
-    #         for j in range(num_experts):
-    #             expert = model.model.layers[0].block_sparse_moe.experts[j].to("cpu")
-    #             w1 = torch.empty_like(expert.w1.weight.data, device='cuda')
-    #             w2 = torch.empty_like(expert.w2.weight.data, device='cuda')
-    #             w3 = torch.empty_like(expert.w3.weight.data, device='cuda')
-    #             expert_buffers.append((w1, w2, w3))
-            
-    #         # 准备CPU数据（固定内存+内存交错优化）---------------------------------
-    #         cpu_experts = []
-    #         for j in range(num_experts):
-    #             expert = model.model.layers[0].block_sparse_moe.experts[j].to("cpu")
-    #             # 对三个权重矩阵分别进行内存优化
-    #             expert.w1.weight.data = expert.w1.weight.data.contiguous().pin_memory()
-    #             expert.w2.weight.data = expert.w2.weight.data.contiguous().pin_memory()
-    #             expert.w3.weight.data = expert.w3.weight.data.contiguous().pin_memory()
-    #             cpu_experts.append(expert)
-
-    #         # 启动异步传输 ------------------------------------------------------
-    #         torch.cuda.synchronize()
-    #         tick = time.time()
-            
-    #         # 策略1：流分组批处理
-    #         for group_start in range(0, num_experts, num_dma_engines):
-    #             group_end = min(group_start + num_dma_engines, num_experts)
-                
-    #             # 策略2：权重矩阵交错分配到不同流
-    #             for idx_in_group, expert_id in enumerate(range(group_start, group_end)):
-    #                 stream_idx = idx_in_group % num_dma_engines
-                    
-    #                 with torch.cuda.stream(streams[stream_idx]):
-    #                     # 每个专家的三个权重使用同一个流顺序传输
-    #                     expert_buffers[expert_id][0].copy_(
-    #                         cpu_experts[expert_id].w1.weight.data, non_blocking=True)
-    #                     expert_buffers[expert_id][1].copy_(
-    #                         cpu_experts[expert_id].w2.weight.data, non_blocking=True)
-    #                     expert_buffers[expert_id][2].copy_(
-    #                         cpu_experts[expert_id].w3.weight.data, non_blocking=True)
-
-    #         # if enable_unified_memory:
-    #         #     for expert_id in range(num_experts):
-    #         #         expert_buffers[expert_id] = (
-    #         #             cpu_experts[expert_id].w1.weight.data.to('cuda', non_blocking=True),
-    #         #             cpu_experts[expert_id].w2.weight.data.to('cuda', non_blocking=True),
-    #         #             cpu_experts[expert_id].w3.weight.data.to('cuda', non_blocking=True)
-    #         #         )
-
-    #         # 同步计时 ----------------------------------------------------------
-    #         torch.cuda.synchronize()
-    #         ret_time.append(time.time() - tick)
-    #         print(f"传输耗时: {ret_time[-1]:.4f}s")
-
-    #         # 清理资源 ----------------------------------------------------------
-    #         for buf in expert_buffers:
-    #             for tensor in buf:
-    #                 del tensor
-    #         torch.cuda.empty_cache()
-
-    #     return np.array(ret_time)
-    # def format_output(array):
-    #     return (
-    #         f"mean: {np.mean(array) * 1000:.2f} ms, std: {np.std(array) * 1000:.2f} ms"
-    #     )
-
-    # test_names = []
-    # mean_times = []
-    # std_times = []
+    plot_expert_performance(model, model_name, args.output_dir)
 
 
-    # # 1) Weight copy, CPU -> GPU
-    # data = weight_copy(model, from_cpu=True)
-    # test_names.append("Weight CPU->GPU")
-    # mean_times.append(np.mean(data) * 1000)
-    # std_times.append(np.std(data) * 1000)
-    
-    # # 2) Weight copy, GPU -> CPU
-    # data = weight_copy(model, from_cpu=False)
-    # test_names.append("Weight GPU->CPU")
-    # mean_times.append(np.mean(data) * 1000)
-    # std_times.append(np.std(data) * 1000)
-    
-    # # 3) Activation copy, CPU -> GPU
-    # data = copy_activation(model, from_cpu=True)
-    # test_names.append("Activation CPU->GPU")
-    # mean_times.append(np.mean(data) * 1000)
-    # std_times.append(np.std(data) * 1000)
-    
-    # # 4) Activation copy, GPU -> CPU
-    # data = copy_activation(model, from_cpu=False)
-    # test_names.append("Activation GPU->CPU")
-    # mean_times.append(np.mean(data) * 1000)
-    # std_times.append(np.std(data) * 1000)
-    
-    # # 5) Execution, GPU
-    # batch_sizes = [1, 2, 4, 8, 16, 32]
-    # for bs in batch_sizes:
-    #     data = expert_gpu(model, batch_size=bs)
-    #     test_names.append(f"GPU Exec bs={bs}")
-    #     mean_times.append(np.mean(data) * 1000)
-    #     std_times.append(np.std(data) * 1000)
-    # for bs in batch_sizes:
-    #     data = expert_cpu(model, batch_size=bs)
-    #     test_names.append(f"CPU Exec bs={bs}")
-    #     mean_times.append(np.mean(data) * 1000)
-    #     std_times.append(np.std(data) * 1000)
-
-    # # 创建柱状图
-    # plt.figure(figsize=(16, 8))
-    # x = np.arange(len(test_names))
-    # width = 0.35
-    
-    # bars = plt.bar(x, mean_times, width, yerr=std_times, capsize=5)
-    
-    # # 添加数值标签
-    # for bar in bars:
-    #     height = bar.get_height()
-    #     plt.text(bar.get_x() + bar.get_width()/2., height,
-    #             f'{height:.2f}',
-    #             ha='center', va='bottom', fontsize=8)
-    
-    # plt.title('Microbenchmark Results (Mean Time ± Std Dev)')
-    # plt.ylabel('Time (ms)')
-    # plt.xticks(x, test_names, rotation=45, ha='right')
-    # plt.tight_layout()
-    
-    # # 保存图表
-    # plt.savefig('microbench_results.png', dpi=300, bbox_inches='tight')
-    # plt.show()
+if __name__ == "__main__":
+    main()

@@ -27,6 +27,10 @@ from torch.nn.utils.rnn import pad_sequence
 import transformers
 import threading
 
+from config import ModelConfig, load_cpu_time_table_from_file
+from logger import BenchmarkLogger
+from scheduler import ExpertScheduler
+
 
 class FiddlerDeepSeekV2:
     """
@@ -41,40 +45,49 @@ class FiddlerDeepSeekV2:
         placeholder: 占位专家，用于异步加载
     """
 
-    def __init__(self, args):
+    def __init__(self, args_or_config):
         """
         初始化DeepSeek-V2推理框架
 
         参数:
-            args: 包含以下属性的配置对象
-                - model: 模型路径
-                - batch_size: 批处理大小
-                - cpu_offload: 是否启用CPU卸载
-                - beam_width: Beam搜索宽度
+            args_or_config: 命令行args对象 或 ModelConfig 对象
         """
+        # ========== Config 处理 ==========
+        if isinstance(args_or_config, ModelConfig):
+            self.config = args_or_config
+        else:
+            self.config = ModelConfig.from_args(args_or_config)
+
         # ========== 基础配置 ==========
         self.dtype = torch.bfloat16  # 使用BF16精度减少显存
         self.dev = torch.device("cuda:0")  # GPU设备
         self.hot_experts = {}  # 热点专家缓存
 
+        # ========== Logger ==========
+        self.logger = BenchmarkLogger(self.config)
+
+        # ========== Scheduler ==========
+        self.scheduler = ExpertScheduler(self.config)
+        # 加载CPU时间表
+        if not self.config.cpu_time_table and os.path.exists(
+            self.config.cpu_time_table_file
+        ):
+            cpu_table = load_cpu_time_table_from_file(self.config.cpu_time_table_file)
+            self.config.cpu_time_table = cpu_table
+            self.scheduler.set_cpu_time_table(cpu_table)
+
         # ========== 模型加载 ==========
         # 加载预训练的DeepSeek-V2模型
         self.model = transformers.AutoModelForCausalLM.from_pretrained(
-            args.model,
+            self.config.model_path,
             torch_dtype=self.dtype,
             use_cache=True,  # 启用KV缓存加速推理
             trust_remote_code=True,
         )
 
         # ========== 批处理配置 ==========
-        self.batch_size = args.batch_size
-        # 根据batch_size设置预取缓存大小
-        if self.batch_size == 4:
-            self.cache = 5
-        elif self.batch_size == 8:
-            self.cache = 10
-        else:
-            self.cache = 15
+        self.batch_size = self.config.batch_size
+        self.cache = self.config.cache
 
         # ========== 模型组件提取 ==========
         self.lm_head = self.model.lm_head  # 输出层
@@ -131,7 +144,9 @@ class FiddlerDeepSeekV2:
         }
 
         # ========== 分词器初始化 ==========
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(args.model)
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.config.model_path
+        )
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # ========== KV缓存初始化 ==========
@@ -139,8 +154,11 @@ class FiddlerDeepSeekV2:
         self.past_key_values_length = 0
 
         # ========== 推理配置 ==========
-        self.cpu_offload = args.cpu_offload  # CPU卸载开关
-        self.beam_width = args.beam_width  # Beam搜索宽度
+        self.cpu_offload = self.config.cpu_offload  # CPU卸载开关
+        self.beam_width = self.config.beam_width  # Beam搜索宽度
+
+        # prefil_pre 标志位
+        self.prefil_pre = False
 
         # ========== MoE配置 ==========
         self.n_layer = len(self.model.layers)  # Transformer层数 (26层)
@@ -328,7 +346,7 @@ class FiddlerDeepSeekV2:
         """
         # 如果没有指定热点专家，从文件加载或使用默认策略
         if popular_experts is None:
-            hot_experts_file = "./hot/deep.txt"
+            hot_experts_file = self.config.hot_expert_file
             if os.path.exists(hot_experts_file):
                 # 从文件加载热点专家
                 try:
@@ -338,7 +356,7 @@ class FiddlerDeepSeekV2:
                             for line in f
                             if line.strip()
                         ]
-                    print(f"Loaded hot experts from {hot_experts_file}")
+                    # print(f"Loaded hot experts from {hot_experts_file}")
                 except Exception as e:
                     print(f"Error loading hot experts: {e}")
             else:
@@ -847,7 +865,8 @@ class FiddlerDeepSeekV2:
             )
             token_time = time.time() - token_start_time
             self.token_decode_times.append(token_time)
-            print(f"Token {i_token} decode time: {token_time * 1000:.2f}ms")
+            # print(f"Token {i_token} decode time: {token_time * 1000:.2f}ms")
+            self.logger.log_token_decode(i_token, token_time)
 
             # position_ids.shape: (1, 1)
             if not self.is_decode:
@@ -1162,71 +1181,15 @@ class FiddlerDeepSeekV2:
                 # 直接使用过滤后的结果，不需要再次排序
                 sorted_experts = list(zip(filtered_expert_ids, filtered_token_counts))
 
-                # 初始化变量
-                e = 1.11  # 搬运开销(m秒) - 初始值 1.39 测量值: 1.1141
-                tg = 0.20  # GPU计算开销(m秒) - 初始值 0.95 测量值: ~0.1-0.25
-                n = len(sorted_experts)
-                ondemand_experts = []
-                # if self.is_decode:
-                cpu_time_table = []
-                with open("microdeepseek_New.txt", "r") as f:
-                    lines = f.readlines()
-                for line in lines[1:]:
-                    parts = line.strip().split(",")
-                    cpu_time = parts[3]
-                    cpu_time_table.append(float(cpu_time) if cpu_time != "NaN" else 0.0)
-                cpu_time_table_max_idx = len(cpu_time_table) - 1
-                tic = time.time()
-                TA = sum(
-                    cpu_time_table[min(tokens, cpu_time_table_max_idx)]
-                    for expert_id, tokens in sorted_experts[0:n]
+                # 使用scheduler决定ondemand专家
+                ondemand_experts = self.scheduler.decide_ondemand(
+                    sorted_experts, self.is_decode
                 )
-                TC = TA
                 experts_in_placeholder = []
-                for i in range(n - 1):
-                    expert_id, token_count = sorted_experts[i]
-                    # 计算TG和TC
-                    # print("e,t,n,i",expert_id, token_count,n,i)
-                    TG = (1 + i) * e + tg
-                    # print("tg",TG)
-                    TC = TC - cpu_time_table[min(token_count, cpu_time_table_max_idx)]
-                    # print("cpu_time_totl[tokens]",TC)
-                    # 判断是否需要ondemand
-                    if self.is_decode:
-                        if TG < TC:
-                            if token_count > 1:
-                                ondemand_experts.append(expert_id)
-                                # print("执行了")
-                            # else:
-                            #     experts_in_placeholder.append(expert_id)
-                            if i == n - 2:
-                                if TC - TG > e:
-                                    expert_id2, token_count2 = sorted_experts[i + 1]
-                                    ondemand_experts.append(expert_id2)
-                                elif TC - TG > e / 2:
-                                    self.prefil_pre = True
-                        else:
-                            # 不满足条件，停止检查后续专家
-                            # print("跳出了")
-                            break
-                    else:
-                        if (
-                            TG
-                            < TC
-                            + cpu_time_table[min(token_count, cpu_time_table_max_idx)]
-                        ):
-                            ondemand_experts.append(expert_id)
-                            # print("执行了")
-                        else:
-                            # 不满足条件，停止检查后续专家
-                            # print("跳出了")
-                            break
-                # print(f"time: {(time.time() - tic)*1000:.2f}ms")
-                # 处理需要ondemand的专家
-                for expert_id in ondemand_experts:
-                    # 这里添加实际的ondemand处理逻辑
-                    # print(f"专家 {expert_id} 被标记为ondemand处理")
-                    pass
+                # prefil_pre处理
+                self.prefil_pre = (
+                    self.prefil_pre if hasattr(self, "prefil_pre") else False
+                )
 
                 if i_layer < self.n_layer - 1:  # 如果不是最后一层
                     next_layer = self.model.layers[i_layer + 1]
