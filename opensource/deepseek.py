@@ -440,18 +440,18 @@ class FiddlerDeepSeekV2:
 
         # ===== 2. 获取可用的占位专家 =====
         target_placeholder = None
-        if not self.expert_placeholder_inused:
+        if not self.expert_placeholder11_inused:
             target_placeholder = self.expert_placeholder
-            self.expert_placeholder_inused = True
-        elif not self.expert_placeholder2_inused:
+            self.expert_placeholder11_inused = True
+        elif not self.expert_placeholder22_inused:
             target_placeholder = self.expert_placeholder2
-            self.expert_placeholder2_inused = True
-        elif not self.expert_placeholder3_inused:
+            self.expert_placeholder22_inused = True
+        elif not self.expert_placeholder33_inused:
             target_placeholder = self.expert_placeholder3
-            self.expert_placeholder3_inused = True
-        elif not self.expert_placeholder4_inused:
+            self.expert_placeholder33_inused = True
+        elif not self.expert_placeholder44_inused:
             target_placeholder = self.expert_placeholder4
-            self.expert_placeholder4_inused = True
+            self.expert_placeholder44_inused = True
         else:
             raise RuntimeError("No available expert placeholder")
 
@@ -491,6 +491,12 @@ class FiddlerDeepSeekV2:
             - 当处理的层号大于占位专家存储的层号时，释放占位专家
             - 这样可以复用GPU显存给后续层的专家使用
         """
+        placeholder_inused_map = {
+            "expert_placeholder": "expert_placeholder11_inused",
+            "expert_placeholder2": "expert_placeholder22_inused",
+            "expert_placeholder3": "expert_placeholder33_inused",
+            "expert_placeholder4": "expert_placeholder44_inused",
+        }
         for placeholder_name in [
             "expert_placeholder",
             "expert_placeholder2",
@@ -498,25 +504,14 @@ class FiddlerDeepSeekV2:
             "expert_placeholder4",
         ]:
             stored_expert = self.placeholder_to_expert[placeholder_name]
-            # 如果占位专家存储的层号小于当前层，或者已经处理完最后一层
             if stored_expert and (
                 stored_expert[0] < layer_idx
                 or (stored_expert[0] == self.n_layer - 1 and layer_idx <= 1)
             ):
-                # 释放占位专家
-                setattr(self, f"{placeholder_name}_inused", False)
+                setattr(self, placeholder_inused_map[placeholder_name], False)
                 self.placeholder_to_expert[placeholder_name] = None
-        # if (layer_idx, expert_id) in self.expert_to_placeholder:
-        #     placeholder = self.expert_to_placeholder[(layer_idx, expert_id)]
-        #     if placeholder == self.expert_placeholder:
-        #         self.expert_placeholder_inused = False
-        #     elif placeholder == self.expert_placeholder2:
-        #         self.expert_placeholder2_inused = False
-        #     elif placeholder == self.expert_placeholder3:
-        #         self.expert_placeholder3_inused = False
-        #     elif placeholder == self.expert_placeholder4:
-        #         self.expert_placeholder4_inused = False
-        #     del self.expert_to_placeholder[(layer_idx, expert_id)]
+                if stored_expert in self.expert_to_placeholder:
+                    del self.expert_to_placeholder[stored_expert]
 
     def is_expert_loading(self, placeholder_name):
         """
@@ -1043,6 +1038,12 @@ class FiddlerDeepSeekV2:
                 # ===== 1. 释放占位专家 =====
                 self.release_placeholder(i_layer, 0)
 
+                # 清理当前层已消费的预取列表
+                if i_layer in self.prefetch_list:
+                    del self.prefetch_list[i_layer]
+                if i_layer in self.prefetching_list:
+                    del self.prefetching_list[i_layer]
+
                 # 保存残差
                 original_inps_shape = inps.shape
                 self.cpu_expert_time_per_layer[i_layer] = 0
@@ -1214,6 +1215,30 @@ class FiddlerDeepSeekV2:
                         expert[0] for expert in sorted_experts[: self.cache]
                     ]
 
+                    # 预取下一层热点专家到占位专家
+                    if self.config.prefetch_enabled and self.is_decode:
+                        next_layer_idx = i_layer + 1
+                        if next_layer_idx not in self.prefetch_list:
+                            self.prefetch_list[next_layer_idx] = []
+                        if next_layer_idx not in self.prefetching_list:
+                            self.prefetching_list[next_layer_idx] = []
+                        for expert_id in top3_experts:
+                            if not self.is_expert_in_gpu_now(next_layer_idx, expert_id):
+                                if (
+                                    expert_id not in self.prefetch_list[next_layer_idx]
+                                    and expert_id
+                                    not in self.prefetching_list[next_layer_idx]
+                                ):
+                                    try:
+                                        self._async_load_expert(
+                                            next_layer_idx, expert_id
+                                        )
+                                        self.prefetch_list[next_layer_idx].append(
+                                            expert_id
+                                        )
+                                    except RuntimeError:
+                                        break
+
                 if self.cpu_offload == 0:
                     print("oo")
 
@@ -1254,11 +1279,15 @@ class FiddlerDeepSeekV2:
                         ] == 1 and self.is_expert_in_gpu_now(i_layer, i_expert):
                             # 命中：规划在GPU上且实际也在GPU上
                             self.cnt_expert_hit += 1
+                            self.logger.log_expert_hit(True)
+                        else:
+                            self.logger.log_expert_hit(False)
 
                         # 检查专家是否在GPU上
                         if self.is_expert_in_gpu_now(i_layer, i_expert):
                             gpu_experts.append(i_expert)
                             experts_in_gpu.append(i_expert)
+                            self.logger.log_expert_class("gpu")
                             continue
 
                         # 检查占位专家是否存储了当前层的专家
@@ -1280,13 +1309,16 @@ class FiddlerDeepSeekV2:
                         ):
                             if i_expert in self.prefetch_list[i_layer]:
                                 experts_in_placeholder.append(i_expert)
+                                self.logger.log_expert_class("prefetch")
                             elif i_expert in self.prefetching_list[i_layer]:
                                 experts_loading.append(i_expert)
+                                self.logger.log_expert_class("loading")
                             else:
                                 experts_remaining.append(i_expert)
-                                # print("aaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                                self.logger.log_expert_class("ondemand")
                         else:
                             cpu_experts.append(i_expert)
+                            self.logger.log_expert_class("cpu")
 
                     # ===== 7. GPU专家处理线程 =====
                     def process_gpu_experts():
@@ -1396,17 +1428,22 @@ class FiddlerDeepSeekV2:
                                 mask = (selected_experts == i_expert).any(dim=1)
                                 if not mask.any():
                                     continue
-                                # print("222")
                                 batch_mask = mask.view(batch_size, seq_len)
                                 expert_input = inps[batch_mask].view(-1, hidden_dim)
                                 tick = time.time()
-                                expert_output = self.run_expert_at_gpu(
-                                    12, 1, expert_input
+                                placeholder = self.expert_to_placeholder.get(
+                                    (i_layer, i_expert)
                                 )
+                                if placeholder is not None:
+                                    expert_output = placeholder(expert_input)
+                                else:
+                                    expert_output = self.run_expert_at_gpu(
+                                        i_layer, i_expert, expert_input
+                                    )
+                                torch.cuda.synchronize()
                                 self.perf_stats["expert_compute"].append(
                                     time.time() - tick
                                 )
-                                # print(f"专家占位2(使用代理专家): {(time.time() - tick)*1000:.2f}ms")
                                 flat_mask = mask.view(-1)
                                 weights = routing_weights[flat_mask].gather(
                                     1,
@@ -1426,21 +1463,21 @@ class FiddlerDeepSeekV2:
                                 mask = (selected_experts == i_expert).any(dim=1)
                                 if not mask.any():
                                     continue
-                                # print("333")
-                                # 等待加载完成
-                                # while self.is_expert_loaded(i_layer, expert_id):
-                                #     time.sleep(0.001)
                                 batch_mask = mask.view(batch_size, seq_len)
                                 expert_input = inps[batch_mask].view(-1, hidden_dim)
                                 tick = time.time()
-                                expert_output = self.run_expert_at_gpu(
-                                    2, 3, expert_input
+                                placeholder = self.expert_to_placeholder.get(
+                                    (i_layer, i_expert)
                                 )
+                                if placeholder is not None:
+                                    expert_output = placeholder(expert_input)
+                                else:
+                                    expert_output = self.run_expert_at_gpu(
+                                        i_layer, i_expert, expert_input
+                                    )
+                                torch.cuda.synchronize()
                                 self.perf_stats["expert_compute"].append(
                                     time.time() - tick
-                                )
-                                print(
-                                    f"专家占位3(使用代理专家): {(time.time() - tick) * 1000:.2f}ms"
                                 )
                                 flat_mask = mask.view(-1)
                                 weights = routing_weights[flat_mask].gather(
@@ -1624,12 +1661,17 @@ class FiddlerDeepSeekV2:
 
                         # 预热CPU专家 (首次调用会触发编译)
                         if cpu_experts:
-                            dummy_input = torch.randn(1, hidden_dim, device="cpu").to(
-                                self.dtype
-                            )
-                            _ = self.model.layers[i_layer].mlp.experts[cpu_experts[0]](
-                                dummy_input
-                            )
+                            if (
+                                not hasattr(self, "_cpu_expert_warmed_up")
+                                or not self._cpu_expert_warmed_up
+                            ):
+                                dummy_input = torch.randn(
+                                    1, hidden_dim, device="cpu"
+                                ).to(self.dtype)
+                                _ = self.model.layers[i_layer].mlp.experts[
+                                    cpu_experts[0]
+                                ](dummy_input)
+                                self._cpu_expert_warmed_up = True
 
                         # 遍历每个CPU专家
                         for i_expert in cpu_experts:
@@ -1692,6 +1734,11 @@ class FiddlerDeepSeekV2:
                         else 1.0
                     )
 
+                    # 记录层统计到logger
+                    self.logger.log_layer_stats(
+                        i_layer, gpu_time, cpu_time, parallel_time
+                    )
+
                     # 打印时间统计（已注释以提高性能）
                     if self.is_decode:
                         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -1739,8 +1786,6 @@ class FiddlerDeepSeekV2:
                 if self.is_decode:
                     layer_time = time.time() - layer_tick
                     layer_time_final = time.time() - laypid
-                    self.layer_time_accumulator[i_layer] += layer_time
-                    # self.layer_time_accumulator_details[expert_case][i_layer] += layer_time
 
                     self.layer_time_stats.append(
                         {
@@ -1750,17 +1795,11 @@ class FiddlerDeepSeekV2:
                         }
                     )
 
-                    # 按专家位置分类记录
-                    # self.layer_time_details[expert_case].append({
-                    #     'layer_id': i_layer,
-                    #     'time': layer_time,
-                    #     'token_step': self.past_key_values_length
-                    # })
                 # end of one layer
 
                 if self.is_decode:
                     layer_time = time.time() - layer_tick
-                    layer_times[i_layer] += layer_time  # 累计层时间
+                    layer_times[i_layer] += layer_time
                     layer_times_mid[i_layer] += laymid
                     layer_times_final[i_layer] += layer_time_final
                     self.layer_time_accumulator[i_layer] += layer_time

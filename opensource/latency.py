@@ -221,7 +221,7 @@ def main():
     parser.add_argument(
         "--prefetch",
         type=str,
-        default="disabled",
+        default="enabled",
         choices=["disabled", "enabled"],
         help="Prefetch strategy: disabled or enabled.",
     )
