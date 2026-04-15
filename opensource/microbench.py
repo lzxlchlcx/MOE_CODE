@@ -223,6 +223,17 @@ def plot_expert_performance(model, model_name, output_dir="./configs"):
     )
     token_counts_smoothed = token_counts[window_size - 1 :]
 
+    # 扩展平滑结果到全长：前部用线性插值，尾部用最后一个平滑值
+    cpu_times_full = np.zeros(len(token_counts))
+    first_valid_idx = window_size - 1
+    for i in range(len(token_counts)):
+        if i < first_valid_idx:
+            cpu_times_full[i] = cpu_times_smoothed[0] * (i + 1) / (first_valid_idx + 1)
+        elif i - first_valid_idx < len(cpu_times_smoothed):
+            cpu_times_full[i] = cpu_times_smoothed[i - first_valid_idx]
+        else:
+            cpu_times_full[i] = cpu_times_smoothed[-1]
+
     plt.plot(
         token_counts_smoothed,
         np.array(cpu_times_smoothed) * 1000,
@@ -245,19 +256,10 @@ def plot_expert_performance(model, model_name, output_dir="./configs"):
             "Token Count,Expert Transfer Time(ms),GPU Computation Time(ms),CPU Computation Time(ms),Self-Attention Time(ms)\n"
         )
         for i, token_count in enumerate(token_counts):
-            if i < window_size - 1:
-                f.write(
-                    f"{token_count},{avg_copy_time:.4f},{gpu_times[i] * 1000:.4f},NaN,{attn_times[i] * 1000:.4f}\n"
-                )
-            else:
-                cpu_time = (
-                    cpu_times_smoothed[i - (window_size - 1)] * 1000
-                    if i - (window_size - 1) < len(cpu_times_smoothed)
-                    else "NaN"
-                )
-                f.write(
-                    f"{token_count},{avg_copy_time:.4f},{gpu_times[i] * 1000:.4f},{cpu_time:.4f},{attn_times[i] * 1000:.4f}\n"
-                )
+            cpu_time = cpu_times_full[i] * 1000
+            f.write(
+                f"{token_count},{avg_copy_time:.4f},{gpu_times[i] * 1000:.4f},{cpu_time:.4f},{attn_times[i] * 1000:.4f}\n"
+            )
 
     sorted_hot_experts = sorted(
         expert_hot_data.items(), key=lambda x: x[1], reverse=True
@@ -277,12 +279,7 @@ def plot_expert_performance(model, model_name, output_dir="./configs"):
     # plt.show()
 
     # 生成系统配置
-    cpu_time_table_list = []
-    for i, token_count in enumerate(token_counts):
-        if i < window_size - 1:
-            cpu_time_table_list.append(0.0)
-        else:
-            cpu_time_table_list.append(cpu_times_smoothed[i - (window_size - 1)] * 1000)
+    cpu_time_table_list = [float(t * 1000) for t in cpu_times_full]
 
     gpu_info = auto_detect_gpu_info()
 

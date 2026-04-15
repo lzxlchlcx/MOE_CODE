@@ -134,6 +134,9 @@ class FiddlerDeepSeekV2:
         self.is_decode = False  # 是否处于decode阶段
         self.prefetch_list = {}  # 已预取的专家列表
         self.prefetching_list = {}  # 正在预取的专家列表
+        self._prefetch_thread = None  # 异步预取线程
+        self._prefetch_lock = threading.Lock()  # 预取锁
+        self._prefetch_stream = torch.cuda.Stream()  # 专用CUDA Stream用于预取拷贝
 
         # 占位专家到真实专家的映射
         self.placeholder_to_expert = {
@@ -465,16 +468,14 @@ class FiddlerDeepSeekV2:
         elif target_placeholder == self.expert_placeholder4:
             self.placeholder_to_expert["expert_placeholder4"] = (layer_idx, expert_id)
 
-        # ===== 4. 拷贝权重到占位专家 =====
-        tick = time.time()
-        for name in ["gate_proj", "up_proj", "down_proj"]:
-            dst = getattr(target_placeholder, name).weight.data
-            src = getattr(
-                self.model.layers[layer_idx].mlp.experts[expert_id], name
-            ).weight.data
-            dst.copy_(src)
-        copytime = time.time() - tick
-        # print(f"预取专家: 层 {layer_idx} 专家 {expert_id} -> {copytime*1000:.2f}ms")
+        # ===== 4. 拷贝权重到占位专家（使用专用CUDA Stream异步拷贝）=====
+        with torch.cuda.stream(self._prefetch_stream):
+            for name in ["gate_proj", "up_proj", "down_proj"]:
+                dst = getattr(target_placeholder, name).weight.data
+                src = getattr(
+                    self.model.layers[layer_idx].mlp.experts[expert_id], name
+                ).weight.data
+                dst.copy_(src, non_blocking=True)
 
         # 记录专家到占位专家的映射，以便后续使用
         self.expert_to_placeholder[(layer_idx, expert_id)] = target_placeholder
@@ -654,7 +655,12 @@ class FiddlerDeepSeekV2:
         # 计算能容纳的专家数量，不使用硬编码的magic number
         calculated_n = int(free_mem / expert_mem_bytes)
         # 预留一定buffer给KV缓存和中间计算，根据batch_size调整
-        buffer_factor = 0.9  # 使用70%的可用显存
+        if self.batch_size >= 16:
+            buffer_factor = 0.4  # 大batch需要更多KV缓存空间
+        elif self.batch_size >= 8:
+            buffer_factor = 0.5  # 中等batch
+        else:
+            buffer_factor = 0.7  # 小batch
         n_expert = int(calculated_n * buffer_factor)
         print(f"  计算的专家数量(无buffer): {calculated_n}")
         print(f"  buffer_factor: {buffer_factor}")
@@ -1038,11 +1044,13 @@ class FiddlerDeepSeekV2:
                 # ===== 1. 释放占位专家 =====
                 self.release_placeholder(i_layer, 0)
 
-                # 清理当前层已消费的预取列表
-                if i_layer in self.prefetch_list:
-                    del self.prefetch_list[i_layer]
-                if i_layer in self.prefetching_list:
-                    del self.prefetching_list[i_layer]
+                # 等待上一层的异步预取完成（线程+CUDA Stream）
+                if (
+                    self._prefetch_thread is not None
+                    and self._prefetch_thread.is_alive()
+                ):
+                    self._prefetch_thread.join()
+                torch.cuda.synchronize(self._prefetch_stream)
 
                 # 保存残差
                 original_inps_shape = inps.shape
@@ -1215,13 +1223,14 @@ class FiddlerDeepSeekV2:
                         expert[0] for expert in sorted_experts[: self.cache]
                     ]
 
-                    # 预取下一层热点专家到占位专家
+                    # 预取下一层热点专家到占位专家（异步）
                     if self.config.prefetch_enabled and self.is_decode:
                         next_layer_idx = i_layer + 1
                         if next_layer_idx not in self.prefetch_list:
                             self.prefetch_list[next_layer_idx] = []
                         if next_layer_idx not in self.prefetching_list:
                             self.prefetching_list[next_layer_idx] = []
+                        prefetch_tasks = []
                         for expert_id in top3_experts:
                             if not self.is_expert_in_gpu_now(next_layer_idx, expert_id):
                                 if (
@@ -1229,15 +1238,51 @@ class FiddlerDeepSeekV2:
                                     and expert_id
                                     not in self.prefetching_list[next_layer_idx]
                                 ):
+                                    prefetch_tasks.append(expert_id)
+
+                        if prefetch_tasks:
+                            self.prefetching_list[next_layer_idx].extend(prefetch_tasks)
+
+                            def _do_prefetch(tasks, layer_idx):
+                                for eid in tasks:
                                     try:
-                                        self._async_load_expert(
-                                            next_layer_idx, expert_id
-                                        )
-                                        self.prefetch_list[next_layer_idx].append(
-                                            expert_id
-                                        )
+                                        self._async_load_expert(layer_idx, eid)
+                                        with self._prefetch_lock:
+                                            if layer_idx in self.prefetch_list:
+                                                self.prefetch_list[layer_idx].append(
+                                                    eid
+                                                )
+                                            if (
+                                                layer_idx in self.prefetching_list
+                                                and eid
+                                                in self.prefetching_list[layer_idx]
+                                            ):
+                                                self.prefetching_list[layer_idx].remove(
+                                                    eid
+                                                )
                                     except RuntimeError:
+                                        with self._prefetch_lock:
+                                            if (
+                                                layer_idx in self.prefetching_list
+                                                and eid
+                                                in self.prefetching_list[layer_idx]
+                                            ):
+                                                self.prefetching_list[layer_idx].remove(
+                                                    eid
+                                                )
                                         break
+
+                            if (
+                                self._prefetch_thread is not None
+                                and self._prefetch_thread.is_alive()
+                            ):
+                                self._prefetch_thread.join()
+                            self._prefetch_thread = threading.Thread(
+                                target=_do_prefetch,
+                                args=(prefetch_tasks, next_layer_idx),
+                                daemon=True,
+                            )
+                            self._prefetch_thread.start()
 
                 if self.cpu_offload == 0:
                     print("oo")
@@ -1796,6 +1841,12 @@ class FiddlerDeepSeekV2:
                     )
 
                 # end of one layer
+
+                # 清理当前层已消费的预取列表
+                if i_layer in self.prefetch_list:
+                    del self.prefetch_list[i_layer]
+                if i_layer in self.prefetching_list:
+                    del self.prefetching_list[i_layer]
 
                 if self.is_decode:
                     layer_time = time.time() - layer_tick

@@ -198,7 +198,9 @@ class BenchmarkReport:
         total_tokens = (
             self.metrics.output_token * self.metrics.batch_size * self.metrics.n_sample
         )
-        total_time = self.metrics.prefill_time + self.metrics.decode_time
+        total_time = (
+            self.metrics.prefill_time + self.metrics.decode_time
+        ) * self.metrics.n_sample
         self.throughput = total_tokens / total_time if total_time > 0 else 0.0
 
         # 平均decode时间

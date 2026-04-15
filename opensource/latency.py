@@ -207,7 +207,7 @@ def main():
     parser.add_argument(
         "--cache",
         type=int,
-        default=2,
+        default=4,
         help="cache size for inference.",
     )
     parser.add_argument("--beam_num", type=int, default=1, help="Beam search number.")
