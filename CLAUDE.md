@@ -62,16 +62,24 @@
 #### 核心流程 (`mixtral_forward()`)
 1. **Prefill 阶段**: 处理完整输入序列
    - Gate 网络路由: 计算每个 token 选哪几个专家
-   - 专家统计: 按 token 数排序专家
-   - ondemand 决策: `scheduler.decide_ondemand()` 比较搬运成本和 CPU 计算成本
-     - `TG = (1+i)*e + tg`: 搬运 i+1 个专家的成本 + GPU 计算成本
-     - `TC`: 剩余专家在 CPU 计算的成本
-     - 如果 `TG < TC`: 搬运到 GPU，否则留在 CPU
+   - 专家统计: 按 token 数降序排序专家（热点优先）
+   - **ondemand 动态调度** (`scheduler.decide_ondemand()`): 比较搬运成本和 CPU 计算成本，动态决定哪些专家从 CPU 搬运到 GPU
+     - **TA**: 如果所有专家都在 CPU 上的总计算时间
+     - **TC**: 剩余专家在 CPU 上的计算时间（随着专家被搬运到 GPU，TC 逐渐减小）
+     - **TG**: `(1+i)*e + tg` - 搬运 i+1 个专家的成本 + GPU 计算成本
+     - **决策逻辑**: 如果 `TG < TC`，说明搬运到 GPU 更划算，将该专家加入 ondemand 列表
+     - **目标**: 通过动态平衡 CPU-GPU 负载，最大化整体吞吐量
 2. **Decode 阶段**: 逐 token 生成
    - 每个 token 重复上述路由和调度过程
    - GPU 专家和 CPU 专家并行处理
    - 并行度计算: `(gpu_time + cpu_time) / wall_time`
 3. **统计记录**: 通过 `logger.py` 记录各项指标
+
+#### ondemand 调度的核心思想
+- **不是简单的"尽可能多搬"**，而是根据成本动态决策
+- 当搬运成本 + GPU 计算成本 < 剩余 CPU 计算成本时，才搬运
+- 这样可以达到 CPU 和 GPU 的最优负载平衡，避免某一侧空闲
+- 关键参数 `e`（搬运时间）、`tg`（GPU计算时间）、`cpu_time_table`（CPU计算时间表）必须通过 microbench 实测，不能随意修改
 
 ---
 
