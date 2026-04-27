@@ -23,6 +23,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+from concurrent.futures import ThreadPoolExecutor
 from torch.nn.utils.rnn import pad_sequence
 import transformers
 
@@ -113,7 +114,7 @@ class FiddlerDeepSeekV2:
         self.is_decode = False  # 是否处于decode阶段
         self.prefetch_list = {}  # 已预取的专家列表
         self.prefetching_list = {}  # 正在预取的专家列表
-        self._prefetch_thread = None  # 异步预取线程
+        self._prefetch_thread = None  # 异步预取 Future
         self._prefetch_lock = threading.Lock()  # 预取锁
         self._prefetch_stream = torch.cuda.Stream()  # 专用CUDA Stream用于预取拷贝
         self._transfer_streams = [torch.cuda.Stream() for _ in range(3)]  # gate/up/down 并行传输
@@ -177,6 +178,17 @@ class FiddlerDeepSeekV2:
         # 设置专家位置并加载热点专家到GPU
         self.set_expert_loc(n_expert_on_gpu)
         self._print_gpu_memory_breakdown("热点专家加载后")
+
+        # ========== S1: Pre-pin all CPU expert weights ==========
+        for layer in self.model.layers:
+            for expert in layer.mlp.experts:
+                for name in ["gate_proj", "up_proj", "down_proj"]:
+                    w = getattr(expert, name, None)
+                    if w is not None and not w.weight.data.is_cuda and not w.weight.data.is_pinned():
+                        w.weight.data = w.weight.data.pin_memory()
+
+        # ========== S2: Thread pool ==========
+        self._executor = ThreadPoolExecutor(max_workers=6)
 
         # ========== 层时间统计 ==========
         self.layer_time_stats = []
@@ -396,12 +408,7 @@ class FiddlerDeepSeekV2:
         if next(expert.parameters()).is_cuda:
             return
 
-        # ===== 1. Pin Memory =====
-        for name in ["gate_proj", "up_proj", "down_proj"]:
-            w = getattr(expert, name)
-            w.weight.data = w.weight.data.pin_memory()
-
-        # ===== 2. 分配占位专家（如果未提供）=====
+        # ===== 1. 分配占位专家（如果未提供）=====
         allocated = False
         if target_placeholder is None:
             ph_idx, target_placeholder = self._get_available_placeholder()
@@ -409,12 +416,12 @@ class FiddlerDeepSeekV2:
                 raise RuntimeError("No available expert placeholder")
             allocated = True
 
-        # ===== 3. 记录映射（仅自动分配时）=====
+        # ===== 2. 记录映射（仅自动分配时）=====
         if allocated:
             self._ph_mapping[ph_idx] = (layer_idx, expert_id)
             self.expert_to_placeholder[(layer_idx, expert_id)] = target_placeholder
 
-        # ===== 4. Multi-stream 并行传输 =====
+        # ===== 3. Multi-stream 并行传输 =====
         for stream, name in zip(self._transfer_streams, ["gate_proj", "up_proj", "down_proj"]):
             with torch.cuda.stream(stream):
                 dst = getattr(target_placeholder, name).weight.data
@@ -1356,15 +1363,11 @@ class FiddlerDeepSeekV2:
 
                         if (
                             self._prefetch_thread is not None
-                            and self._prefetch_thread.is_alive()
                         ):
-                            self._prefetch_thread.join()
-                        self._prefetch_thread = threading.Thread(
-                            target=_do_prefetch,
-                            args=(prefetch_tasks, next_layer_idx),
-                            daemon=True,
+                            self._prefetch_thread.result()
+                        self._prefetch_thread = self._executor.submit(
+                            _do_prefetch, prefetch_tasks, next_layer_idx
                         )
-                        self._prefetch_thread.start()
 
                 # ===== 11. Expert processing (GPU thread + CPU thread) =====
                 gpu_results = []
@@ -1668,12 +1671,10 @@ class FiddlerDeepSeekV2:
                     cpu_time = time.time() - start_time
 
                 parallel_start = time.time()
-                gpu_thread = threading.Thread(target=process_gpu_experts)
-                cpu_thread = threading.Thread(target=process_cpu_experts)
-                gpu_thread.start()
-                cpu_thread.start()
-                gpu_thread.join()
-                cpu_thread.join()
+                gpu_future = self._executor.submit(process_gpu_experts)
+                cpu_future = self._executor.submit(process_cpu_experts)
+                gpu_future.result()
+                cpu_future.result()
                 parallel_time = time.time() - parallel_start
 
                 max_thread_time = max(gpu_time, cpu_time)
