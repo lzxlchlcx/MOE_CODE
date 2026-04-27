@@ -1,0 +1,8 @@
+================================================================================
+PDScope deepseek Benchmark Report
+Schedule: pdscope
+Time: 2026-04-23 23:00:15
+Config: batch_size=1, input_token=128, output_token=32
+Params: e=0.82ms, tg=0.10ms, tc=0.00ms
+================================================================================
+
