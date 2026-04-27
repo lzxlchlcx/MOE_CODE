@@ -18,9 +18,10 @@ class ExpertScheduler:
         self.config = config
         self.e = config.e
         self.tg = config.tg
+        self.tc = config.get_tc()
         self.cpu_time_table = config.cpu_time_table
         self.max_ondemand = (
-            4  # decode阶段最多ondemand搬运4个专家（与placeholder数量匹配）
+            4
         )
 
     def decide_ondemand(
@@ -118,3 +119,45 @@ class ExpertScheduler:
         """设置 CPU 时间表"""
         self.cpu_time_table = table
         self.config.cpu_time_table = table
+        if table and len(table) > 1:
+            self.tc = table[1]
+
+    def decide_decode(
+        self, r_cur: int, r_next: int, k: int
+    ) -> Tuple[str, int, int]:
+        """
+        Decode 阶段负载均衡调度
+
+        参数:
+            r_cur: 当前层选中专家中已在GPU的数量（驻留+已预取）
+            r_next: 下一层预测专家中已在GPU的数量
+            k: 当前层选中的专家总数
+
+        返回:
+            (mode, ondemand_count, prefetch_count)
+            mode: "A" | "B" | "C" | "default"
+            ondemand_count: 当前层需要ondemand加载的专家数
+            prefetch_count: 下一层需要prefetch的专家数
+        """
+        if k == 0:
+            return "C", 0, 0
+
+        n_g = k * self.tc / (self.tg + self.tc) if (self.tg + self.tc) > 0 else 0
+        n_g = max(0, min(k, int(round(n_g))))
+
+        cur_below = r_cur < n_g
+        next_below = r_next < n_g
+
+        if not cur_below and not next_below:
+            return "C", 0, 0
+        elif cur_below and not next_below:
+            ondemand = min(n_g - r_cur, self.max_ondemand)
+            return "A", ondemand, 0
+        elif not cur_below and next_below:
+            prefetch = min(n_g - r_next, self.max_ondemand)
+            return "B", 0, prefetch
+        else:
+            ondemand = min(n_g - r_cur, self.max_ondemand)
+            prefetch = min(n_g - r_next, self.max_ondemand, self.max_ondemand - ondemand)
+            prefetch = max(0, prefetch)
+            return "default", ondemand, prefetch

@@ -25,7 +25,6 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 import transformers
-import threading
 
 from config import ModelConfig, load_cpu_time_table_from_file
 from logger import BenchmarkLogger
@@ -68,6 +67,7 @@ class FiddlerDeepSeekV2:
 
         # ========== Scheduler ==========
         self.scheduler = ExpertScheduler(self.config)
+        self.scheduler.tc = self.config.get_tc()
         # 加载CPU时间表
         if not self.config.cpu_time_table and os.path.exists(
             self.config.cpu_time_table_file
@@ -91,7 +91,6 @@ class FiddlerDeepSeekV2:
 
         # ========== 模型组件提取 ==========
         self.lm_head = self.model.lm_head  # 输出层
-        self.prefil_pre = False  # 预填充预取标志
         # 只保留model部分(去除lm_head)
         self.model = self.model.model
 
@@ -99,35 +98,15 @@ class FiddlerDeepSeekV2:
         first_layer_mlp = self.model.layers[1].mlp
 
         # ========== 占位专家初始化 ==========
-        # 创建6个占位专家用于异步加载
-        # 占位专家是预分配在GPU上的空壳，用于从CPU拷贝专家权重
-        self.expert_placeholder = copy.deepcopy(first_layer_mlp.experts[0]).to(self.dev)
-        self.expert_placeholder2 = copy.deepcopy(first_layer_mlp.experts[1]).to(
-            self.dev
-        )
-        self.expert_placeholder3 = copy.deepcopy(first_layer_mlp.experts[2]).to(
-            self.dev
-        )
-        self.expert_placeholder4 = copy.deepcopy(first_layer_mlp.experts[3]).to(
-            self.dev
-        )
-        self.expert_placeholder5 = copy.deepcopy(first_layer_mlp.experts[4]).to(
-            self.dev
-        )
-        self.expert_placeholder6 = copy.deepcopy(first_layer_mlp.experts[5]).to(
-            self.dev
-        )
+        self._placeholders = [
+            copy.deepcopy(first_layer_mlp.experts[i]).to(self.dev)
+            for i in range(6)
+        ]
+        self._ph_in_use = [False] * 6
+        self._ph_mapping = [None] * 6  # 每个占位专家当前存储的 (layer_idx, expert_id)
 
-        # 占位专家映射表: (layer_idx, expert_id) -> placeholder
+        # 反向映射: (layer_idx, expert_id) -> 占位专家对象
         self.expert_to_placeholder = {}
-
-        # 占位专家使用状态标志
-        self.expert_placeholder11_inused = False
-        self.expert_placeholder22_inused = False
-        self.expert_placeholder33_inused = False
-        self.expert_placeholder44_inused = False
-        self.expert_placeholder5_inused = False
-        self.expert_placeholder6_inused = False
 
         # ========== 预取相关状态 ==========
         self.prefetch_layers = 0  # 预取层数
@@ -137,14 +116,7 @@ class FiddlerDeepSeekV2:
         self._prefetch_thread = None  # 异步预取线程
         self._prefetch_lock = threading.Lock()  # 预取锁
         self._prefetch_stream = torch.cuda.Stream()  # 专用CUDA Stream用于预取拷贝
-
-        # 占位专家到真实专家的映射
-        self.placeholder_to_expert = {
-            "expert_placeholder": None,
-            "expert_placeholder2": None,
-            "expert_placeholder3": None,
-            "expert_placeholder4": None,
-        }
+        self._transfer_streams = [torch.cuda.Stream() for _ in range(3)]  # gate/up/down 并行传输
 
         # ========== 分词器初始化 ==========
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -166,7 +138,7 @@ class FiddlerDeepSeekV2:
         # ========== MoE配置 ==========
         self.n_layer = len(self.model.layers)  # Transformer层数 (26层)
         self.n_expert = self.model.config.n_routed_experts  # 路由专家数量 (64)
-        self.n_shared_experts = 2  # 共享专家数量 (2)
+        self.n_shared_experts = self.config.n_shared_experts  # 共享专家数量
 
         # ========== 统计信息 ==========
         self.expert_selection_stats = []  # 记录专家选择情况
@@ -179,18 +151,8 @@ class FiddlerDeepSeekV2:
             self.expert_selection_history[i] = []
             self.hit_stats[i] = {"hits": 0, "total": 0}
 
-        # 专家权重累计器 (用于热点分析)
-        self.expert_weight_accumulator = {}
-        for i in range(1, 27):
-            self.expert_weight_accumulator[i] = torch.zeros(6, device=self.dev)
-
         # 每层CPU专家处理时间累计
         self.cpu_expert_time_per_layer = {i: 0.0 for i in range(1, 27)}
-
-        # ========== 性能参数 ==========
-        # TODO: 根据设备配置动态确定
-        self.latency_cpu = 5  # CPU专家估计延迟(ms)
-        self.latency_gpu = 45  # GPU专家估计延迟(ms)
 
         # 专家命中统计
         self.cnt_expert_hit = 0
@@ -199,10 +161,10 @@ class FiddlerDeepSeekV2:
         # ========== GPU资源分配 ==========
         # 将非专家组件(Embedding, Attention, LayerNorm等)移到GPU
         self.bring_non_expert_to_gpu()
+        self._print_gpu_memory_breakdown("非专家组件加载后")
 
         # 专家位置矩阵: [n_layer, n_expert], 0=CPU, 1=GPU
         self.expert_loc = np.zeros((self.n_layer, self.n_expert), dtype=int)
-        self.expert_loc_now = np.zeros((self.n_layer, self.n_expert), dtype=int)
 
         # 计算可容纳到GPU的专家数量
         n_expert_on_gpu = self.calc_n_expert_on_gpu()
@@ -212,25 +174,13 @@ class FiddlerDeepSeekV2:
 
         # 设置专家位置并加载热点专家到GPU
         self.set_expert_loc(n_expert_on_gpu)
+        self._print_gpu_memory_breakdown("热点专家加载后")
 
         # ========== 层时间统计 ==========
         self.layer_time_stats = []
         self.layer_time_accumulator = {}
         for i in range(1, 27):
             self.layer_time_accumulator[i] = 0.0
-
-        self.layer_time_details = {
-            "all_gpu": [],  # 全GPU
-            "all_cpu": [],  # 全CPU
-            "mixed": [],  # 混合
-        }
-
-        # 基于历史的详细时间统计
-        self.layer_time_accumulator_details = {
-            "all_gpu": {i: 0.0 for i in range(1, 27)},
-            "all_cpu": {i: 0.0 for i in range(1, 27)},
-            "mixed": {i: 0.0 for i in range(1, 27)},
-        }
 
         # 专家统计: 记录上一次和当前迭代的专家选择
         self.last_iter_expert_stats = {
@@ -246,6 +196,7 @@ class FiddlerDeepSeekV2:
         # ========== 加载专家到GPU ==========
         tick = time.time()
         self.bring_expert_to_gpu()
+        self._print_gpu_memory_breakdown("所有GPU专家加载后")
         print(f"专家 移动总耗时: {(time.time() - tick) * 1000:.2f}ms")
         print("Model is ready.")
 
@@ -377,108 +328,100 @@ class FiddlerDeepSeekV2:
             i_layer, i_expert = popular_experts[i]
             self.expert_loc[i_layer, i_expert] = 1  # 1=在GPU上
 
-    def _async_ondemand(self, layer_idx, expert_id, target_placeholder):
+    def _get_available_placeholder(self):
+        """获取一个可用的占位专家，返回 (index, placeholder) 或 (None, None)"""
+        for i, in_use in enumerate(self._ph_in_use):
+            if not in_use:
+                self._ph_in_use[i] = True
+                return i, self._placeholders[i]
+        return None, None
+
+    def _release_placeholder_by_index(self, idx):
+        """按索引释放占位专家"""
+        if idx is not None and 0 <= idx < len(self._placeholders):
+            stored = self._ph_mapping[idx]
+            if stored in self.expert_to_placeholder:
+                del self.expert_to_placeholder[stored]
+            self._ph_mapping[idx] = None
+            self._ph_in_use[idx] = False
+
+    def _is_expert_available_on_gpu(self, i_layer, expert_id):
+        """检查专家是否可在GPU上使用（驻留/已预取/正在预取/占位专家中）"""
+        if self.is_expert_in_gpu_now(i_layer, expert_id):
+            return True
+        if (
+            i_layer in self.prefetch_list
+            and expert_id in self.prefetch_list[i_layer]
+        ):
+            return True
+        if (
+            i_layer in self.prefetching_list
+            and expert_id in self.prefetching_list[i_layer]
+        ):
+            return True
+        for stored in self._ph_mapping:
+            if stored and stored == (i_layer, expert_id):
+                return True
+        return False
+
+    def _count_gpu_residents(self, i_layer, expert_ids):
+        """统计指定层的专家列表中有多少已在GPU上可用"""
+        count = 0
+        for eid in expert_ids:
+            if self._is_expert_available_on_gpu(i_layer, eid):
+                count += 1
+        return count
+
+    def _async_load_expert(self, layer_idx, expert_id, target_placeholder=None, ph_idx=None):
         """
-        异步按需加载专家到GPU
+        加载专家权重到GPU占位专家
 
         参数:
             layer_idx: 层索引
             expert_id: 专家ID
-            target_placeholder: 目标占位专家
+            target_placeholder: 可选的目标占位专家对象
+            ph_idx: 可选的占位专家索引（与 target_placeholder 配对使用）
+                - 都为 None: 自动分配占位专家并记录映射（prefetch路径）
+                - 都提供: 直接使用（ondemand路径）
 
         说明:
             - 使用Pinned Memory加速CPU->GPU传输
-            - 将专家权重拷贝到占位专家位置
-        """
-        # 获取专家模型
-        expert = self.model.layers[layer_idx].mlp.experts[expert_id]
-
-        # 如果专家已经在GPU上，直接返回
-        if next(expert.parameters()).is_cuda:
-            return
-
-        # ===== 1. 将权重锁定到Pinned Memory =====
-        for name in ["gate_proj", "up_proj", "down_proj"]:
-            w = getattr(self.model.layers[layer_idx].mlp.experts[expert_id], name)
-            src_weight_data_tensor = w.weight.data
-            pinned = src_weight_data_tensor.pin_memory()
-            w.weight.data = pinned
-
-        # ===== 2. 拷贝权重到占位专家 =====
-        tick = time.time()
-        for name in ["gate_proj", "up_proj", "down_proj"]:
-            dst = getattr(target_placeholder, name).weight.data
-            src = getattr(
-                self.model.layers[layer_idx].mlp.experts[expert_id], name
-            ).weight.data
-            dst.copy_(src)
-
-        copytime = time.time() - tick
-
-    def _async_load_expert(self, layer_idx, expert_id):
-        """
-        异步预加载专家到GPU
-
-        参数:
-            layer_idx: 层索引
-            expert_id: 专家ID
-
-        说明:
-            - 将CPU上的专家异步加载到GPU占位专家位置
-            - 使用Pinned Memory加速传输
-            - 记录专家到占位专家的映射关系
+            - 使用3个CUDA Stream并行传输gate/up/down_proj
+            - 当自动分配时，记录双向映射关系
         """
         expert = self.model.layers[layer_idx].mlp.experts[expert_id]
 
-        # 如果专家已经在GPU上，直接返回
         if next(expert.parameters()).is_cuda:
             return
 
-        # ===== 1. 使用Pinned Memory加速 =====
+        # ===== 1. Pin Memory =====
         for name in ["gate_proj", "up_proj", "down_proj"]:
-            w = getattr(self.model.layers[layer_idx].mlp.experts[expert_id], name)
-            src_weight_data_tensor = w.weight.data
-            pinned = src_weight_data_tensor.pin_memory()
-            w.weight.data = pinned
+            w = getattr(expert, name)
+            w.weight.data = w.weight.data.pin_memory()
 
-        # ===== 2. 获取可用的占位专家 =====
-        target_placeholder = None
-        if not self.expert_placeholder11_inused:
-            target_placeholder = self.expert_placeholder
-            self.expert_placeholder11_inused = True
-        elif not self.expert_placeholder22_inused:
-            target_placeholder = self.expert_placeholder2
-            self.expert_placeholder22_inused = True
-        elif not self.expert_placeholder33_inused:
-            target_placeholder = self.expert_placeholder3
-            self.expert_placeholder33_inused = True
-        elif not self.expert_placeholder44_inused:
-            target_placeholder = self.expert_placeholder4
-            self.expert_placeholder44_inused = True
-        else:
-            raise RuntimeError("No available expert placeholder")
+        # ===== 2. 分配占位专家（如果未提供）=====
+        allocated = False
+        if target_placeholder is None:
+            ph_idx, target_placeholder = self._get_available_placeholder()
+            if target_placeholder is None:
+                raise RuntimeError("No available expert placeholder")
+            allocated = True
 
-        # ===== 3. 记录映射关系 =====
-        if target_placeholder == self.expert_placeholder:
-            self.placeholder_to_expert["expert_placeholder"] = (layer_idx, expert_id)
-        elif target_placeholder == self.expert_placeholder2:
-            self.placeholder_to_expert["expert_placeholder2"] = (layer_idx, expert_id)
-        elif target_placeholder == self.expert_placeholder3:
-            self.placeholder_to_expert["expert_placeholder3"] = (layer_idx, expert_id)
-        elif target_placeholder == self.expert_placeholder4:
-            self.placeholder_to_expert["expert_placeholder4"] = (layer_idx, expert_id)
+        # ===== 3. 记录映射（仅自动分配时）=====
+        if allocated:
+            self._ph_mapping[ph_idx] = (layer_idx, expert_id)
+            self.expert_to_placeholder[(layer_idx, expert_id)] = target_placeholder
 
-        # ===== 4. 拷贝权重到占位专家（使用专用CUDA Stream异步拷贝）=====
-        with torch.cuda.stream(self._prefetch_stream):
-            for name in ["gate_proj", "up_proj", "down_proj"]:
+        # ===== 4. Multi-stream 并行传输 =====
+        for stream, name in zip(self._transfer_streams, ["gate_proj", "up_proj", "down_proj"]):
+            with torch.cuda.stream(stream):
                 dst = getattr(target_placeholder, name).weight.data
-                src = getattr(
-                    self.model.layers[layer_idx].mlp.experts[expert_id], name
-                ).weight.data
+                src = getattr(expert, name).weight.data
                 dst.copy_(src, non_blocking=True)
+        for s in self._transfer_streams:
+            torch.cuda.synchronize(s)
 
-        # 记录专家到占位专家的映射，以便后续使用
-        self.expert_to_placeholder[(layer_idx, expert_id)] = target_placeholder
+        return ph_idx, target_placeholder
 
     def release_placeholder(self, layer_idx, expert_id):
         """
@@ -490,40 +433,14 @@ class FiddlerDeepSeekV2:
 
         说明:
             - 当处理的层号大于占位专家存储的层号时，释放占位专家
-            - 这样可以复用GPU显存给后续层的专家使用
         """
-        placeholder_inused_map = {
-            "expert_placeholder": "expert_placeholder11_inused",
-            "expert_placeholder2": "expert_placeholder22_inused",
-            "expert_placeholder3": "expert_placeholder33_inused",
-            "expert_placeholder4": "expert_placeholder44_inused",
-        }
-        for placeholder_name in [
-            "expert_placeholder",
-            "expert_placeholder2",
-            "expert_placeholder3",
-            "expert_placeholder4",
-        ]:
-            stored_expert = self.placeholder_to_expert[placeholder_name]
-            if stored_expert and (
-                stored_expert[0] < layer_idx
-                or (stored_expert[0] == self.n_layer - 1 and layer_idx <= 1)
+        for i in range(len(self._placeholders)):
+            stored = self._ph_mapping[i]
+            if stored and (
+                stored[0] < layer_idx
+                or (stored[0] == self.n_layer - 1 and layer_idx <= 1)
             ):
-                setattr(self, placeholder_inused_map[placeholder_name], False)
-                self.placeholder_to_expert[placeholder_name] = None
-                if stored_expert in self.expert_to_placeholder:
-                    del self.expert_to_placeholder[stored_expert]
-
-    def is_expert_loading(self, placeholder_name):
-        """
-        检查指定占位专家是否正在加载
-
-        参数:
-            placeholder_name: 占位专家名称
-        返回:
-            bool: 是否正在加载
-        """
-        return self.expert_loading_status.get(placeholder_name, False)
+                self._release_placeholder_by_index(i)
 
     def is_expert_loaded(self, layer_id, expert_id):
         """
@@ -626,8 +543,8 @@ class FiddlerDeepSeekV2:
         total_mem_gb = total_mem / (1024**3)
         used_mem = torch.cuda.memory_allocated(self.dev)
         used_mem_gb = used_mem / (1024**3)
-        # 预留5%显存，使用95%
-        free_mem = total_mem * 0.95 - used_mem
+        # 预留20%显存，使用80%
+        free_mem = total_mem * 0.8 - used_mem
         free_mem_gb = free_mem / (1024**3)
 
         # 单个专家的显存占用 (bfloat16 = 2 bytes per param)
@@ -639,7 +556,7 @@ class FiddlerDeepSeekV2:
         print(f"[DEBUG calc_n_expert_on_gpu]")
         print(f"  GPU总显存: {total_mem_gb:.2f} GB")
         print(f"  已占用显存: {used_mem_gb:.2f} GB")
-        print(f"  可用显存(95%): {free_mem_gb:.2f} GB")
+        print(f"  可用显存(80%): {free_mem_gb:.2f} GB")
         print(f"  单个专家参数量: {n_param:,}")
         print(f"  单个专家显存占用: {expert_mem_mb:.2f} MB ({expert_mem_gb:.4f} GB)")
         print(f"  模型总专家数: {(self.n_layer - 1) * self.n_expert}")
@@ -676,6 +593,20 @@ class FiddlerDeepSeekV2:
 
         return n_expert
 
+    def _print_gpu_memory_breakdown(self, stage: str):
+        total = torch.cuda.get_device_properties(self.dev).total_memory
+        used = torch.cuda.memory_allocated(self.dev)
+        reserved = torch.cuda.memory_reserved(self.dev)
+        gb = lambda b: b / (1024 ** 3)
+        mb = lambda b: b / (1024 ** 2)
+        print(f"\n{'='*60}")
+        print(f"[GPU显存] {stage}")
+        print(f"  GPU总显存:        {gb(total):8.2f} GB")
+        print(f"  已分配(PyTorch):  {gb(used):8.2f} GB ({mb(used):.0f} MB)")
+        print(f"  已预留(CUDA):     {gb(reserved):8.2f} GB ({mb(reserved):.0f} MB)")
+        print(f"  剩余可用(估算):   {gb(total - reserved):8.2f} GB")
+        print(f"{'='*60}\n")
+
     def initial_beam_tensor(self, input_tensor):
         """
         Beam搜索张量初始化
@@ -709,7 +640,7 @@ class FiddlerDeepSeekV2:
         返回:
             tuple: (prefill_time, decode_time, hit_rate, stats)
         """
-        torch.set_num_threads(16)
+        torch.set_num_threads(self.config.cpu_threads)
 
         # 初始化KV缓存
         self.past_key_value = transformers.cache_utils.DynamicCache.from_legacy_cache()
@@ -901,8 +832,7 @@ class FiddlerDeepSeekV2:
                 "expert_selection": self.expert_selection_stats,
                 "expert_time": self.expert_time_stats,
                 "layer_time": self.layer_time_stats,
-                "outputs": decode_strings,  # 添加输出文本
-                "layer_time_details": self.layer_time_details,  # 添加细粒度时间统计
+                "outputs": decode_strings,
                 "expert_hot_stats": self.get_expert_stats(),
                 "layer_time_avg": {
                     i: self.layer_time_accumulator[i]
@@ -910,23 +840,6 @@ class FiddlerDeepSeekV2:
                         1, len([x for x in self.layer_time_stats if x["layer_id"] == i])
                     )
                     for i in range(1, 27)
-                },
-                "layer_time_avg_details": {  # 添加分类平均时间
-                    case: {
-                        i: self.layer_time_accumulator_details[case][i]
-                        / max(
-                            1,
-                            len(
-                                [
-                                    x
-                                    for x in self.layer_time_details[case]
-                                    if x["layer_id"] == i
-                                ]
-                            ),
-                        )
-                        for i in range(1, 27)
-                    }
-                    for case in ["all_gpu", "all_cpu", "mixed"]
                 },
             },
         )
@@ -1170,15 +1083,8 @@ class FiddlerDeepSeekV2:
                     ):
                         expert_in_gpu = True
                     else:
-                        # 检查是否在占位专家中
-                        for placeholder_name in [
-                            "expert_placeholder",
-                            "expert_placeholder2",
-                            "expert_placeholder3",
-                            "expert_placeholder4",
-                        ]:
-                            stored_expert = self.placeholder_to_expert[placeholder_name]
-                            if stored_expert and stored_expert == (i_layer, expert_id):
+                        for stored in self._ph_mapping:
+                            if stored and stored == (i_layer, expert_id):
                                 expert_in_gpu = True
                                 break
 
@@ -1190,635 +1096,555 @@ class FiddlerDeepSeekV2:
                 # 直接使用过滤后的结果，不需要再次排序
                 sorted_experts = list(zip(filtered_expert_ids, filtered_token_counts))
 
-                # 使用scheduler决定ondemand专家
-                ondemand_experts = self.scheduler.decide_ondemand(
-                    sorted_experts, self.is_decode
-                )
+                # ===== 7. Next layer prediction + decode scheduling =====
+                selected_expert_ids = selected_experts.unique().tolist()
+                next_predicted_expert_ids = []
+                next_sorted_experts = []
+                if i_layer < self.n_layer - 1:
+                    next_layer = self.model.layers[i_layer + 1]
+                    with torch.no_grad():
+                        next_predicted_experts, next_routing_weights, _ = (
+                            next_layer.mlp.gate(inps)
+                        )
+
+                    next_expert_token_counts = {}
+                    for batch_idx in range(batch_size * seq_len):
+                        for expert in next_predicted_experts[batch_idx]:
+                            next_expert_token_counts[expert.item()] = (
+                                next_expert_token_counts.get(expert.item(), 0) + 1
+                            )
+                    next_sorted_experts = sorted(
+                        next_expert_token_counts.items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )
+                    next_predicted_expert_ids = [
+                        expert[0] for expert in next_sorted_experts
+                    ]
+
+                # ===== 8. Scheduling decision =====
+                if self.is_decode:
+                    k = len(selected_expert_ids)
+                    r_cur = self._count_gpu_residents(i_layer, selected_expert_ids)
+                    r_next = (
+                        self._count_gpu_residents(
+                            i_layer + 1, next_predicted_expert_ids
+                        )
+                        if i_layer < self.n_layer - 1
+                        else k
+                    )
+                    mode, ondemand_count, prefetch_count = (
+                        self.scheduler.decide_decode(r_cur, r_next, k)
+                    )
+                    ondemand_experts = []
+                else:
+                    mode = "prefill"
+                    ondemand_count = 0
+                    prefetch_count = 0
+                    ondemand_experts = self.scheduler.decide_ondemand(
+                        sorted_experts, self.is_decode
+                    )
+
+                # ===== 9. Expert classification =====
                 experts_in_placeholder = []
-                # prefil_pre处理
                 self.prefil_pre = (
                     self.prefil_pre if hasattr(self, "prefil_pre") else False
                 )
 
-                if i_layer < self.n_layer - 1:  # 如果不是最后一层
-                    next_layer = self.model.layers[i_layer + 1]
-                    # 使用当前层输出预测下一层专家
-                    with torch.no_grad():
-                        next_predicted_experts, next_routing_weights, _ = (
-                            next_layer.mlp.gate(inps)
-                        )  # Moon模型使用mlp.gate
+                inps_after_experts = torch.zeros_like(inps, device=self.dev)
+                expert_mask = torch.nn.functional.one_hot(
+                    selected_experts,
+                    num_classes=self.n_expert + self.n_shared_experts,
+                ).permute(2, 1, 0)
 
-                    expert_token_counts = {}
-                    for batch_idx in range(batch_size * seq_len):
-                        for expert in next_predicted_experts[batch_idx]:
-                            expert_token_counts[expert.item()] = (
-                                expert_token_counts.get(expert.item(), 0) + 1
-                            )
-                    # 按token处理量排序，获取前三热点专家
-                    sorted_experts = sorted(
-                        expert_token_counts.items(), key=lambda x: x[1], reverse=True
-                    )
+                cpu_experts = []
+                gpu_experts = []
+                experts_in_gpu = []
+                experts_loading = []
+                experts_remaining = []
+                experts_remaining2 = []
+                decode_ondemand_used = 0
 
-                    top3_experts = [
-                        expert[0] for expert in sorted_experts[: self.cache]
-                    ]
+                if self.is_decode:
+                    laymid = time.time() - layer_tick
+                    laypid = time.time()
 
-                    # 预取下一层热点专家到占位专家（异步）
-                    if self.config.prefetch_enabled and self.is_decode:
-                        next_layer_idx = i_layer + 1
-                        if next_layer_idx not in self.prefetch_list:
-                            self.prefetch_list[next_layer_idx] = []
-                        if next_layer_idx not in self.prefetching_list:
-                            self.prefetching_list[next_layer_idx] = []
-                        prefetch_tasks = []
-                        for expert_id in top3_experts:
-                            if not self.is_expert_in_gpu_now(next_layer_idx, expert_id):
-                                if (
-                                    expert_id not in self.prefetch_list[next_layer_idx]
-                                    and expert_id
-                                    not in self.prefetching_list[next_layer_idx]
-                                ):
-                                    prefetch_tasks.append(expert_id)
+                for i_expert in selected_expert_ids:
+                    self.cnt_expert_all += 1
+                    if self.expert_loc[
+                        i_layer, i_expert
+                    ] == 1 and self.is_expert_in_gpu_now(i_layer, i_expert):
+                        self.cnt_expert_hit += 1
+                        self.logger.log_expert_hit(True)
+                    else:
+                        self.logger.log_expert_hit(False)
 
-                        if prefetch_tasks:
-                            self.prefetching_list[next_layer_idx].extend(prefetch_tasks)
+                    if self.is_expert_in_gpu_now(i_layer, i_expert):
+                        gpu_experts.append(i_expert)
+                        experts_in_gpu.append(i_expert)
+                        self.logger.log_expert_class("gpu")
+                        continue
 
-                            def _do_prefetch(tasks, layer_idx):
-                                for eid in tasks:
-                                    try:
-                                        self._async_load_expert(layer_idx, eid)
-                                        with self._prefetch_lock:
-                                            if layer_idx in self.prefetch_list:
-                                                self.prefetch_list[layer_idx].append(
-                                                    eid
-                                                )
-                                            if (
-                                                layer_idx in self.prefetching_list
-                                                and eid
-                                                in self.prefetching_list[layer_idx]
-                                            ):
-                                                self.prefetching_list[layer_idx].remove(
-                                                    eid
-                                                )
-                                    except RuntimeError:
-                                        with self._prefetch_lock:
-                                            if (
-                                                layer_idx in self.prefetching_list
-                                                and eid
-                                                in self.prefetching_list[layer_idx]
-                                            ):
-                                                self.prefetching_list[layer_idx].remove(
-                                                    eid
-                                                )
-                                        break
+                    if i_layer not in self.prefetch_list:
+                        self.prefetch_list[i_layer] = []
+                    if i_layer not in self.prefetching_list:
+                        self.prefetching_list[i_layer] = []
 
-                            if (
-                                self._prefetch_thread is not None
-                                and self._prefetch_thread.is_alive()
-                            ):
-                                self._prefetch_thread.join()
-                            self._prefetch_thread = threading.Thread(
-                                target=_do_prefetch,
-                                args=(prefetch_tasks, next_layer_idx),
-                                daemon=True,
-                            )
-                            self._prefetch_thread.start()
+                    if i_expert in self.prefetch_list[i_layer]:
+                        experts_in_placeholder.append(i_expert)
+                        self.logger.log_expert_class("prefetch")
+                        continue
 
-                if self.cpu_offload == 0:
-                    print("oo")
-
-                else:
-                    # prefill stage with offloading
-                    # print("prefill stage with offloading")
-                    inps_after_experts = torch.zeros_like(inps, device=self.dev)
-                    expert_mask = torch.nn.functional.one_hot(
-                        selected_experts,
-                        num_classes=self.n_expert + self.n_shared_experts,
-                    ).permute(2, 1, 0)
-
-                    # first, calculate the number of tokens for each expert
-                    cpu_experts = []
-                    gpu_experts = []
-                    experts_in_gpu = []
-                    # experts_in_placeholder = []
-                    experts_loading = []
-                    experts_remaining = []
-                    experts_remaining2 = []  # for prefil
-                    selected_expert_ids = selected_experts.unique().tolist()
+                    if i_expert in self.prefetching_list[i_layer]:
+                        experts_loading.append(i_expert)
+                        self.logger.log_expert_class("loading")
+                        continue
 
                     if self.is_decode:
-                        laymid = time.time() - layer_tick
-                        laypid = time.time()
-                    # 定义收集处理结果的容器
-                    # 定义收集处理结果的容器
-                    gpu_results = []  # 元素为 (mask_index, expert_output)
-                    cpu_results = []
-                    gpu_time = 0.0
-                    cpu_time = 0.0
-                    self._prefetch_thread_started = False
-                    for i_expert in selected_expert_ids:
-                        # 统计命中率：专家是否在初始规划的GPU位置上
-                        self.cnt_expert_all += 1
-                        if self.expert_loc[
-                            i_layer, i_expert
-                        ] == 1 and self.is_expert_in_gpu_now(i_layer, i_expert):
-                            # 命中：规划在GPU上且实际也在GPU上
-                            self.cnt_expert_hit += 1
-                            self.logger.log_expert_hit(True)
+                        if mode in ("A", "default") and decode_ondemand_used < ondemand_count:
+                            experts_remaining.append(i_expert)
+                            self.logger.log_expert_class("ondemand")
+                            decode_ondemand_used += 1
                         else:
-                            self.logger.log_expert_hit(False)
-
-                        # 检查专家是否在GPU上
-                        if self.is_expert_in_gpu_now(i_layer, i_expert):
-                            gpu_experts.append(i_expert)
-                            experts_in_gpu.append(i_expert)
-                            self.logger.log_expert_class("gpu")
-                            continue
-
-                        # 检查占位专家是否存储了当前层的专家
-                        # expert_in_placeholder = False
-                        # for placeholder_name in ['expert_placeholder', 'expert_placeholder2',
-                        #                     'expert_placeholder3', 'expert_placeholder4']:
-                        #     stored_expert = self.placeholder_to_expert[placeholder_name]
-                        #     if stored_expert and stored_expert == (i_layer, i_expert):
-                        #         expert_in_placeholder = True
-                        #         break
-                        if i_layer not in self.prefetch_list:
-                            self.prefetch_list[i_layer] = []
-                        if i_layer not in self.prefetching_list:
-                            self.prefetching_list[i_layer] = []
-                        if (
-                            i_expert in ondemand_experts
-                            or i_expert in self.prefetch_list[i_layer]
-                            or i_expert in self.prefetching_list[i_layer]
-                        ):
-                            if i_expert in self.prefetch_list[i_layer]:
-                                experts_in_placeholder.append(i_expert)
-                                self.logger.log_expert_class("prefetch")
-                            elif i_expert in self.prefetching_list[i_layer]:
-                                experts_loading.append(i_expert)
-                                self.logger.log_expert_class("loading")
-                            else:
-                                experts_remaining.append(i_expert)
-                                self.logger.log_expert_class("ondemand")
+                            cpu_experts.append(i_expert)
+                            self.logger.log_expert_class("cpu")
+                    else:
+                        if i_expert in ondemand_experts:
+                            experts_remaining.append(i_expert)
+                            self.logger.log_expert_class("ondemand")
                         else:
                             cpu_experts.append(i_expert)
                             self.logger.log_expert_class("cpu")
 
-                    # ===== 7. GPU专家处理线程 =====
-                    def process_gpu_experts():
-                        """
-                        GPU专家处理线程
-
-                        说明:
-                            - 并行处理多个GPU上的专家
-                            - 包括三类专家:
-                              1. 直接在GPU上的专家 (experts_in_gpu)
-                              2. 已预取的专家 (experts_in_placeholder)
-                              3. 正在加载的专家 (experts_loading)
-                              4. 需要ondemand加载的专家 (experts_remaining)
-                        """
-                        inps_after_experts = torch.zeros_like(inps, device=self.dev)
-                        nonlocal gpu_time
-                        start_time = time.time()
-
-                        # 7.1 处理已在GPU上的专家
-                        def process_experts_in_gpu():
-                            """
-                            处理已经在GPU显存中的专家
-                            """
-                            results = []
-                            threads = []
-                            lock = threading.Lock()
-
-                            def process_single_expert(i_expert):
-                                # 获取选中该专家的token掩码
-                                mask = (selected_experts == i_expert).any(dim=1)
-                                if not mask.any():
-                                    return
-
-                                # 提取该专家处理的token
-                                batch_mask = mask.view(batch_size, seq_len)
-                                expert_input = inps[batch_mask].view(-1, hidden_dim)
-
-                                # 在GPU上运行专家
-                                tick = time.time()
-                                expert_output = self.run_expert_at_gpu(
-                                    i_layer, i_expert, expert_input
-                                )
-                                self.perf_stats["expert_compute"].append(
-                                    time.time() - tick
-                                )
-
-                                # 获取路由权重并加权
-                                flat_mask = mask.view(-1)
-                                weights = routing_weights[flat_mask].gather(
-                                    1,
-                                    (selected_experts[flat_mask] == i_expert)
-                                    .long()
-                                    .argmax(dim=1, keepdim=True),
-                                )
-                                expert_output = expert_output * weights
-                                mask_index = mask.nonzero().squeeze(1)
-
-                                with lock:
-                                    results.append((mask_index, expert_output))
-
-                            # 并行处理每个GPU专家
-                            for i_expert in experts_in_gpu:
-                                t = threading.Thread(
-                                    target=process_single_expert, args=(i_expert,)
-                                )
-                                threads.append(t)
-                                t.start()
-
-                            # 等待所有线程完成
-                            for t in threads:
-                                t.join()
-
-                            return results
-
-                        def process_experts_in_gpu():
-                            results = []
-                            for i_expert in experts_in_gpu:
-                                mask = (selected_experts == i_expert).any(dim=1)
-                                if not mask.any():
-                                    continue
-                                batch_mask = mask.view(batch_size, seq_len)
-                                expert_input = inps[batch_mask].view(-1, hidden_dim)
-                                tick = time.time()
-                                expert_output = self.run_expert_at_gpu(
-                                    i_layer, i_expert, expert_input
-                                )
-                                self.perf_stats["expert_compute"].append(
-                                    time.time() - tick
-                                )
-                                # print("111")
-                                flat_mask = mask.view(-1)
-                                weights = routing_weights[flat_mask].gather(
-                                    1,
-                                    (selected_experts[flat_mask] == i_expert)
-                                    .long()
-                                    .argmax(dim=1, keepdim=True),
-                                )
-                                expert_output = expert_output * weights
-                                mask_index = mask.nonzero().squeeze(1)
-                                results.append((mask_index, expert_output))
-                            return results
-
-                        def process_experts_in_placeholder():
-                            results = []
-
-                            for i_expert in experts_in_placeholder:
-                                mask = (selected_experts == i_expert).any(dim=1)
-                                if not mask.any():
-                                    continue
-                                batch_mask = mask.view(batch_size, seq_len)
-                                expert_input = inps[batch_mask].view(-1, hidden_dim)
-                                tick = time.time()
-                                placeholder = self.expert_to_placeholder.get(
-                                    (i_layer, i_expert)
-                                )
-                                if placeholder is not None:
-                                    expert_output = placeholder(expert_input)
-                                else:
-                                    expert_output = self.run_expert_at_gpu(
-                                        i_layer, i_expert, expert_input
-                                    )
-                                torch.cuda.synchronize()
-                                self.perf_stats["expert_compute"].append(
-                                    time.time() - tick
-                                )
-                                flat_mask = mask.view(-1)
-                                weights = routing_weights[flat_mask].gather(
-                                    1,
-                                    (selected_experts[flat_mask] == i_expert)
-                                    .long()
-                                    .argmax(dim=1, keepdim=True),
-                                )
-                                expert_output = expert_output * weights
-                                mask_index = mask.nonzero().squeeze(1)
-                                results.append((mask_index, expert_output))
-                            return results
-
-                        def process_experts_loading():
-                            results = []
-
-                            for i_expert in experts_loading:
-                                mask = (selected_experts == i_expert).any(dim=1)
-                                if not mask.any():
-                                    continue
-                                batch_mask = mask.view(batch_size, seq_len)
-                                expert_input = inps[batch_mask].view(-1, hidden_dim)
-                                tick = time.time()
-                                placeholder = self.expert_to_placeholder.get(
-                                    (i_layer, i_expert)
-                                )
-                                if placeholder is not None:
-                                    expert_output = placeholder(expert_input)
-                                else:
-                                    expert_output = self.run_expert_at_gpu(
-                                        i_layer, i_expert, expert_input
-                                    )
-                                torch.cuda.synchronize()
-                                self.perf_stats["expert_compute"].append(
-                                    time.time() - tick
-                                )
-                                flat_mask = mask.view(-1)
-                                weights = routing_weights[flat_mask].gather(
-                                    1,
-                                    (selected_experts[flat_mask] == i_expert)
-                                    .long()
-                                    .argmax(dim=1, keepdim=True),
-                                )
-                                expert_output = expert_output * weights
-                                mask_index = mask.nonzero().squeeze(1)
-                                results.append((mask_index, expert_output))
-                            return results
-
-                        def process_experts_remaining():
-                            results = []
-                            threads = []
-                            expert_results = {}
-
-                            def process_single_expert(i_expert, placeholder):
-                                mask = (selected_experts == i_expert).any(dim=1)
-                                if not mask.any():
-                                    return
-
-                                batch_mask = mask.view(batch_size, seq_len)
-                                expert_input = inps[batch_mask].view(-1, hidden_dim)
-                                self._async_ondemand(i_layer, i_expert, placeholder)
-                                expert_output = placeholder(expert_input)
-
-                                # 立即释放占位专家
-                                flat_mask = mask.view(-1)
-                                weights = routing_weights[flat_mask].gather(
-                                    1,
-                                    (selected_experts[flat_mask] == i_expert)
-                                    .long()
-                                    .argmax(dim=1, keepdim=True),
-                                )
-                                expert_output = expert_output * weights
-                                mask_index = mask.nonzero().squeeze(1)
-                                with threading.Lock():
-                                    results.append((mask_index, expert_output))
-
-                            # 为每个专家分配占位专家并启动线程
-                            for i_expert in experts_remaining:
-                                # 等待直到有可用的占位专家
-                                # 分配占位专家
-                                # print("bbbbbbbbb")
-                                if not self.expert_placeholder5_inused:
-                                    placeholder = self.expert_placeholder5
-                                    self.expert_placeholder5_inused = True
-                                elif not self.expert_placeholder6_inused:
-                                    placeholder = self.expert_placeholder6
-                                    self.expert_placeholder6_inused = True
-                                elif not self.expert_placeholder33_inused:
-                                    placeholder = self.expert_placeholder3
-                                    self.expert_placeholder33_inused = True
-                                elif not self.expert_placeholder44_inused:
-                                    placeholder = self.expert_placeholder4
-                                    self.expert_placeholder44_inused = True
-                                elif not self.expert_placeholder11_inused:
-                                    placeholder = self.expert_placeholder
-                                    self.expert_placeholder11_inused = True
-                                elif not self.expert_placeholder22_inused:
-                                    placeholder = self.expert_placeholder2
-                                    self.expert_placeholder22_inused = True
-                                else:
-                                    experts_remaining2.append(i_expert)
-                                    continue
-                                t = threading.Thread(
-                                    target=process_single_expert,
-                                    args=(i_expert, placeholder),
-                                )
-                                threads.append(t)
-                                t.start()
-                                for t in threads:
-                                    t.join()
-                                threads = []
-                                self.expert_placeholder5_inused = False
-                                self.expert_placeholder6_inused = False
-                                self.expert_placeholder33_inused = False  # 新增
-                                self.expert_placeholder44_inused = False  # 新增
-                                self.expert_placeholder11_inused = False  # 新增
-                                self.expert_placeholder22_inused = False  # 新增
-                            for i_expert in experts_remaining2:
-                                if not self.expert_placeholder5_inused:
-                                    placeholder = self.expert_placeholder5
-                                    self.expert_placeholder5_inused = True
-                                elif not self.expert_placeholder6_inused:
-                                    placeholder = self.expert_placeholder6
-                                    self.expert_placeholder6_inused = True
-                                elif not self.expert_placeholder33_inused:
-                                    placeholder = self.expert_placeholder3
-                                    self.expert_placeholder33_inused = True
-                                elif not self.expert_placeholder44_inused:
-                                    placeholder = self.expert_placeholder4
-                                    self.expert_placeholder44_inused = True
-                                elif not self.expert_placeholder11_inused:
-                                    placeholder = self.expert_placeholder
-                                    self.expert_placeholder11_inused = True
-                                elif not self.expert_placeholder22_inused:
-                                    placeholder = self.expert_placeholder2
-                                    self.expert_placeholder22_inused = True
-                                else:
-                                    continue
-                                t = threading.Thread(
-                                    target=process_single_expert,
-                                    args=(i_expert, placeholder),
-                                )
-                                threads.append(t)
-                                t.start()
-                                self.expert_placeholder5_inused = False
-                                self.expert_placeholder6_inused = False
-                                self.expert_placeholder33_inused = False  # 新增
-                                self.expert_placeholder44_inused = False  # 新增
-                                self.expert_placeholder11_inused = False  # 新增
-                                self.expert_placeholder22_inused = False  # 新增
-                            # 不需要等待所有线程完成，因为主线程会处理结果合并
-                            return results
-
-                        threads = []
-                        results = []
-
-                        def run_and_collect(func):
-                            res = func()
-                            results.extend(res)
-
-                        threads.append(
-                            threading.Thread(
-                                target=run_and_collect, args=(process_experts_in_gpu,)
-                            )
-                        )
-                        threads.append(
-                            threading.Thread(
-                                target=run_and_collect,
-                                args=(process_experts_in_placeholder,),
-                            )
-                        )
-                        threads.append(
-                            threading.Thread(
-                                target=run_and_collect, args=(process_experts_loading,)
-                            )
-                        )
-                        threads.append(
-                            threading.Thread(
-                                target=run_and_collect,
-                                args=(process_experts_remaining,),
-                            )
-                        )
-
-                        for t in threads:
-                            t.start()
-                        for t in threads:
-                            t.join()
-                        # 合并结果
-                        for mask_index, expert_output in results:
-                            expert_output = expert_output.view(-1, hidden_dim)
-                            inps_after_experts = inps_after_experts.view(-1, hidden_dim)
-                            inps_after_experts.index_add_(
-                                0,
-                                mask_index,
-                                expert_output.to(inps_after_experts.dtype),
-                            )
-                        inps_after_experts = inps_after_experts.view(
-                            batch_size, seq_len, hidden_dim
-                        )
-                        gpu_time = time.time() - start_time
-
-                    # ===== 8. CPU专家处理线程 =====
-                    def process_cpu_experts():
-                        """
-                        CPU专家处理线程
-
-                        说明:
-                            - 处理需要CPU计算的专家
-                            - 特点:
-                              1. 将输入拷贝到CPU
-                              2. 在CPU上进行专家计算
-                              3. 将结果拷贝回GPU
-                        """
-                        nonlocal cpu_time
-                        start_time = time.time()
-
-                        # 预热CPU专家 (首次调用会触发编译)
-                        if cpu_experts:
+                # ===== 10. Next layer prefetch =====
+                if (
+                    i_layer < self.n_layer - 1
+                    and self.config.prefetch_enabled
+                    and self.is_decode
+                    and mode in ("B", "default")
+                ):
+                    next_layer_idx = i_layer + 1
+                    if next_layer_idx not in self.prefetch_list:
+                        self.prefetch_list[next_layer_idx] = []
+                    if next_layer_idx not in self.prefetching_list:
+                        self.prefetching_list[next_layer_idx] = []
+                    prefetch_tasks = []
+                    if prefetch_count > 0:
+                        experts_to_prefetch = next_predicted_expert_ids[:prefetch_count]
+                    else:
+                        experts_to_prefetch = [
+                            e[0] for e in next_sorted_experts[: self.cache]
+                        ]
+                    for expert_id in experts_to_prefetch:
+                        if not self.is_expert_in_gpu_now(next_layer_idx, expert_id):
                             if (
-                                not hasattr(self, "_cpu_expert_warmed_up")
-                                or not self._cpu_expert_warmed_up
+                                expert_id not in self.prefetch_list[next_layer_idx]
+                                and expert_id
+                                not in self.prefetching_list[next_layer_idx]
                             ):
-                                dummy_input = torch.randn(
-                                    1, hidden_dim, device="cpu"
-                                ).to(self.dtype)
-                                _ = self.model.layers[i_layer].mlp.experts[
-                                    cpu_experts[0]
-                                ](dummy_input)
-                                self._cpu_expert_warmed_up = True
+                                prefetch_tasks.append(expert_id)
 
-                        # 遍历每个CPU专家
-                        for i_expert in cpu_experts:
+                    if prefetch_tasks:
+                        self.prefetching_list[next_layer_idx].extend(prefetch_tasks)
+
+                        def _do_prefetch(tasks, layer_idx):
+                            for eid in tasks:
+                                try:
+                                    self._async_load_expert(layer_idx, eid)
+                                    with self._prefetch_lock:
+                                        if layer_idx in self.prefetch_list:
+                                            self.prefetch_list[layer_idx].append(eid)
+                                        if (
+                                            layer_idx in self.prefetching_list
+                                            and eid in self.prefetching_list[layer_idx]
+                                        ):
+                                            self.prefetching_list[layer_idx].remove(eid)
+                                except RuntimeError:
+                                    with self._prefetch_lock:
+                                        if (
+                                            layer_idx in self.prefetching_list
+                                            and eid in self.prefetching_list[layer_idx]
+                                        ):
+                                            self.prefetching_list[layer_idx].remove(eid)
+                                    break
+
+                        if (
+                            self._prefetch_thread is not None
+                            and self._prefetch_thread.is_alive()
+                        ):
+                            self._prefetch_thread.join()
+                        self._prefetch_thread = threading.Thread(
+                            target=_do_prefetch,
+                            args=(prefetch_tasks, next_layer_idx),
+                            daemon=True,
+                        )
+                        self._prefetch_thread.start()
+
+                # ===== 11. Expert processing (GPU thread + CPU thread) =====
+                gpu_results = []
+                cpu_results = []
+                gpu_time = 0.0
+                cpu_time = 0.0
+                self._prefetch_thread_started = False
+
+                def process_gpu_experts():
+                    nonlocal gpu_time
+                    start_time = time.time()
+
+                    def process_experts_in_gpu():
+                        results = []
+                        threads = []
+                        lock = threading.Lock()
+
+                        def process_single_expert(i_expert):
                             mask = (selected_experts == i_expert).any(dim=1)
                             if not mask.any():
-                                continue
+                                return
 
-                            # 将输入拷贝到CPU
                             batch_mask = mask.view(batch_size, seq_len)
-                            expert_input = (
-                                inps[batch_mask].view(-1, hidden_dim).to("cpu")
-                            )
-                            # expert_input = inps[mask].to("cpu")
+                            expert_input = inps[batch_mask].view(-1, hidden_dim)
+
                             tick = time.time()
-                            expert_output = self.run_expert_at_cpu(
+                            expert_output = self.run_expert_at_gpu(
                                 i_layer, i_expert, expert_input
                             )
-                            self.perf_stats["expert_compute-cpu"].append(
+                            self.perf_stats["expert_compute"].append(
                                 time.time() - tick
                             )
+
                             flat_mask = mask.view(-1)
-                            weights = (
-                                routing_weights[flat_mask]
-                                .gather(
-                                    1,
-                                    (selected_experts[flat_mask] == i_expert)
-                                    .long()
-                                    .argmax(dim=1, keepdim=True),
-                                )
-                                .to("cpu")
+                            weights = routing_weights[flat_mask].gather(
+                                1,
+                                (selected_experts[flat_mask] == i_expert)
+                                .long()
+                                .argmax(dim=1, keepdim=True),
                             )
                             expert_output = expert_output * weights
                             mask_index = mask.nonzero().squeeze(1)
-                            cpu_results.append((mask_index, expert_output))
-                        cpu_time = time.time() - start_time
 
-                    parallel_start = time.time()
-                    # 启动并行的GPU和CPU处理线程
-                    gpu_thread = threading.Thread(target=process_gpu_experts)
-                    cpu_thread = threading.Thread(target=process_cpu_experts)
-                    # if not self.is_decode and self.prefil_pre==True:
-                    #     if self._prefetch_thread_started==False:
-                    #         prefetch_thread.start()
-                    #         self._prefetch_thread_started = True
-                    #         self.prefil_pre=False
-                    gpu_thread.start()
-                    cpu_thread.start()
+                            with lock:
+                                results.append((mask_index, expert_output))
 
-                    # 只等待GPU和CPU线程完成
-                    gpu_thread.join()
-                    cpu_thread.join()
-                    # prefetch_thread.join()
-                    parallel_time = time.time() - parallel_start
+                        for i_expert in experts_in_gpu:
+                            t = threading.Thread(
+                                target=process_single_expert, args=(i_expert,)
+                            )
+                            threads.append(t)
+                            t.start()
 
-                    # 计算并行度
-                    max_thread_time = max(gpu_time, cpu_time)
-                    parallel_degree = (
-                        (gpu_time + cpu_time) / parallel_time
-                        if parallel_time > 0
-                        else 1.0
+                        for t in threads:
+                            t.join()
+
+                        return results
+
+                    def process_experts_in_gpu():
+                        results = []
+                        for i_expert in experts_in_gpu:
+                            mask = (selected_experts == i_expert).any(dim=1)
+                            if not mask.any():
+                                continue
+                            batch_mask = mask.view(batch_size, seq_len)
+                            expert_input = inps[batch_mask].view(-1, hidden_dim)
+                            tick = time.time()
+                            expert_output = self.run_expert_at_gpu(
+                                i_layer, i_expert, expert_input
+                            )
+                            self.perf_stats["expert_compute"].append(
+                                time.time() - tick
+                            )
+                            flat_mask = mask.view(-1)
+                            weights = routing_weights[flat_mask].gather(
+                                1,
+                                (selected_experts[flat_mask] == i_expert)
+                                .long()
+                                .argmax(dim=1, keepdim=True),
+                            )
+                            expert_output = expert_output * weights
+                            mask_index = mask.nonzero().squeeze(1)
+                            results.append((mask_index, expert_output))
+                        return results
+
+                    def process_experts_in_placeholder():
+                        results = []
+
+                        for i_expert in experts_in_placeholder:
+                            mask = (selected_experts == i_expert).any(dim=1)
+                            if not mask.any():
+                                continue
+                            batch_mask = mask.view(batch_size, seq_len)
+                            expert_input = inps[batch_mask].view(-1, hidden_dim)
+                            tick = time.time()
+                            placeholder = self.expert_to_placeholder.get(
+                                (i_layer, i_expert)
+                            )
+                            if placeholder is not None:
+                                torch.cuda.synchronize(self._prefetch_stream)
+                                expert_output = placeholder(expert_input)
+                            else:
+                                ph_idx, placeholder = self._get_available_placeholder()
+                                if placeholder is not None:
+                                    self._async_load_expert(
+                                        i_layer, i_expert, target_placeholder=placeholder, ph_idx=ph_idx
+                                    )
+                                    expert_output = placeholder(expert_input)
+                                else:
+                                    expert_input_cpu = expert_input.to("cpu")
+                                    expert_output = self.run_expert_at_cpu(
+                                        i_layer, i_expert, expert_input_cpu
+                                    )
+                                    expert_output = expert_output.to(self.dev)
+                            torch.cuda.synchronize()
+                            self.perf_stats["expert_compute"].append(
+                                time.time() - tick
+                            )
+                            flat_mask = mask.view(-1)
+                            weights = routing_weights[flat_mask].gather(
+                                1,
+                                (selected_experts[flat_mask] == i_expert)
+                                .long()
+                                .argmax(dim=1, keepdim=True),
+                            )
+                            expert_output = expert_output * weights
+                            mask_index = mask.nonzero().squeeze(1)
+                            results.append((mask_index, expert_output))
+                        return results
+
+                    def process_experts_loading():
+                        results = []
+
+                        for i_expert in experts_loading:
+                            mask = (selected_experts == i_expert).any(dim=1)
+                            if not mask.any():
+                                continue
+                            batch_mask = mask.view(batch_size, seq_len)
+                            expert_input = inps[batch_mask].view(-1, hidden_dim)
+                            tick = time.time()
+                            placeholder = self.expert_to_placeholder.get(
+                                (i_layer, i_expert)
+                            )
+                            if placeholder is not None:
+                                torch.cuda.synchronize(self._prefetch_stream)
+                                expert_output = placeholder(expert_input)
+                            else:
+                                ph_idx, placeholder = self._get_available_placeholder()
+                                if placeholder is not None:
+                                    self._async_load_expert(
+                                        i_layer, i_expert, target_placeholder=placeholder, ph_idx=ph_idx
+                                    )
+                                    expert_output = placeholder(expert_input)
+                                else:
+                                    expert_input_cpu = expert_input.to("cpu")
+                                    expert_output = self.run_expert_at_cpu(
+                                        i_layer, i_expert, expert_input_cpu
+                                    )
+                                    expert_output = expert_output.to(self.dev)
+                            torch.cuda.synchronize()
+                            self.perf_stats["expert_compute"].append(
+                                time.time() - tick
+                            )
+                            flat_mask = mask.view(-1)
+                            weights = routing_weights[flat_mask].gather(
+                                1,
+                                (selected_experts[flat_mask] == i_expert)
+                                .long()
+                                .argmax(dim=1, keepdim=True),
+                            )
+                            expert_output = expert_output * weights
+                            mask_index = mask.nonzero().squeeze(1)
+                            results.append((mask_index, expert_output))
+                        return results
+
+                    def process_experts_remaining():
+                        results = []
+
+                        def process_single_expert(i_expert, ph_idx, placeholder):
+                            mask = (selected_experts == i_expert).any(dim=1)
+                            if not mask.any():
+                                self._release_placeholder_by_index(ph_idx)
+                                return
+
+                            batch_mask = mask.view(batch_size, seq_len)
+                            expert_input = inps[batch_mask].view(-1, hidden_dim)
+                            self._async_load_expert(i_layer, i_expert, target_placeholder=placeholder, ph_idx=ph_idx)
+                            expert_output = placeholder(expert_input)
+
+                            flat_mask = mask.view(-1)
+                            weights = routing_weights[flat_mask].gather(
+                                1,
+                                (selected_experts[flat_mask] == i_expert)
+                                .long()
+                                .argmax(dim=1, keepdim=True),
+                            )
+                            expert_output = expert_output * weights
+                            mask_index = mask.nonzero().squeeze(1)
+                            results.append((mask_index, expert_output))
+                            self._release_placeholder_by_index(ph_idx)
+
+                        for i_expert in experts_remaining:
+                            ph_idx, placeholder = self._get_available_placeholder()
+                            if placeholder is None:
+                                experts_remaining2.append(i_expert)
+                                continue
+                            process_single_expert(i_expert, ph_idx, placeholder)
+
+                        for i_expert in experts_remaining2:
+                            ph_idx, placeholder = self._get_available_placeholder()
+                            if placeholder is None:
+                                continue
+                            process_single_expert(i_expert, ph_idx, placeholder)
+
+                        return results
+
+                    threads = []
+                    results = []
+
+                    def run_and_collect(func):
+                        res = func()
+                        results.extend(res)
+
+                    threads.append(
+                        threading.Thread(
+                            target=run_and_collect, args=(process_experts_in_gpu,)
+                        )
+                    )
+                    threads.append(
+                        threading.Thread(
+                            target=run_and_collect,
+                            args=(process_experts_in_placeholder,),
+                        )
+                    )
+                    threads.append(
+                        threading.Thread(
+                            target=run_and_collect, args=(process_experts_loading,)
+                        )
+                    )
+                    threads.append(
+                        threading.Thread(
+                            target=run_and_collect,
+                            args=(process_experts_remaining,),
+                        )
                     )
 
-                    # 记录层统计到logger
-                    self.logger.log_layer_stats(
-                        i_layer, gpu_time, cpu_time, parallel_time
+                    for t in threads:
+                        t.start()
+                    for t in threads:
+                        t.join()
+                    gpu_results.extend(results)
+                    gpu_time = time.time() - start_time
+
+                def process_cpu_experts():
+                    nonlocal cpu_time
+                    start_time = time.time()
+
+                    if cpu_experts:
+                        if (
+                            not hasattr(self, "_cpu_expert_warmed_up")
+                            or not self._cpu_expert_warmed_up
+                        ):
+                            dummy_input = torch.randn(
+                                1, hidden_dim, device="cpu"
+                            ).to(self.dtype)
+                            _ = self.model.layers[i_layer].mlp.experts[
+                                cpu_experts[0]
+                            ](dummy_input)
+                            self._cpu_expert_warmed_up = True
+
+                    for i_expert in cpu_experts:
+                        mask = (selected_experts == i_expert).any(dim=1)
+                        if not mask.any():
+                            continue
+
+                        batch_mask = mask.view(batch_size, seq_len)
+                        expert_input = (
+                            inps[batch_mask].view(-1, hidden_dim).to("cpu")
+                        )
+                        tick = time.time()
+                        expert_output = self.run_expert_at_cpu(
+                            i_layer, i_expert, expert_input
+                        )
+                        self.perf_stats["expert_compute-cpu"].append(
+                            time.time() - tick
+                        )
+                        flat_mask = mask.view(-1)
+                        weights = (
+                            routing_weights[flat_mask]
+                            .gather(
+                                1,
+                                (selected_experts[flat_mask] == i_expert)
+                                .long()
+                                .argmax(dim=1, keepdim=True),
+                            )
+                            .to("cpu")
+                        )
+                        expert_output = expert_output * weights
+                        mask_index = mask.nonzero().squeeze(1)
+                        cpu_results.append((mask_index, expert_output))
+                    cpu_time = time.time() - start_time
+
+                parallel_start = time.time()
+                gpu_thread = threading.Thread(target=process_gpu_experts)
+                cpu_thread = threading.Thread(target=process_cpu_experts)
+                gpu_thread.start()
+                cpu_thread.start()
+                gpu_thread.join()
+                cpu_thread.join()
+                parallel_time = time.time() - parallel_start
+
+                max_thread_time = max(gpu_time, cpu_time)
+                parallel_degree = (
+                    (gpu_time + cpu_time) / parallel_time
+                    if parallel_time > 0
+                    else 1.0
+                )
+
+                self.logger.log_layer_stats(
+                    i_layer, gpu_time, cpu_time, parallel_time
+                )
+
+                if self.is_decode:
+                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                    stats_text = (
+                        f"\n[{timestamp}] Layer {i_layer} Thread Time Stats:\n"
+                    )
+                    stats_text += (
+                        f"[{timestamp}] GPU Thread Time: {gpu_time * 1000:.2f}ms\n"
+                    )
+                    stats_text += (
+                        f"[{timestamp}] CPU Thread Time: {cpu_time * 1000:.2f}ms\n"
+                    )
+                    stats_text += f"[{timestamp}] Parallel Time: {parallel_time * 1000:.2f}ms\n"
+                    stats_text += (
+                        f"[{timestamp}] Parallel Degree: {parallel_degree:.2f}x\n"
                     )
 
-                    # 打印时间统计（已注释以提高性能）
-                    if self.is_decode:
-                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                        stats_text = (
-                            f"\n[{timestamp}] Layer {i_layer} Thread Time Stats:\n"
-                        )
-                        stats_text += (
-                            f"[{timestamp}] GPU Thread Time: {gpu_time * 1000:.2f}ms\n"
-                        )
-                        stats_text += (
-                            f"[{timestamp}] CPU Thread Time: {cpu_time * 1000:.2f}ms\n"
-                        )
-                        stats_text += f"[{timestamp}] Parallel Time: {parallel_time * 1000:.2f}ms\n"
-                        stats_text += (
-                            f"[{timestamp}] Parallel Degree: {parallel_degree:.2f}x\n"
-                        )
-                        # print(stats_text)
+                    os.makedirs("./log", exist_ok=True)
+                    with open("./log/linshi.txt", "a") as f:
+                        f.write(stats_text)
 
-                        # 写入到临时日志文件
-                        os.makedirs("./log", exist_ok=True)
-                        with open("./log/linshi.txt", "a") as f:
-                            f.write(stats_text)
-                    # 合并GPU处理结果
-                    # 合并CPU处理结果（需要移动到GPU）
-                    for mask_index, expert_output in cpu_results:
-                        expert_output = expert_output.view(-1, hidden_dim)
-                        inps_after_experts = inps_after_experts.view(-1, hidden_dim)
-                        inps_after_experts.index_add_(
-                            0,
-                            mask_index.to(self.dev),
-                            expert_output.to(self.dev).to(inps_after_experts.dtype),
-                        )
-                        inps_after_experts = inps_after_experts.view(
-                            batch_size, seq_len, hidden_dim
-                        )
+                # ===== 12. Merge results =====
+                for mask_index, expert_output in gpu_results:
+                    expert_output = expert_output.view(-1, hidden_dim)
+                    inps_after_experts = inps_after_experts.view(-1, hidden_dim)
+                    inps_after_experts.index_add_(
+                        0,
+                        mask_index,
+                        expert_output.to(inps_after_experts.dtype),
+                    )
+                inps_after_experts = inps_after_experts.view(
+                    batch_size, seq_len, hidden_dim
+                )
+
+                for mask_index, expert_output in cpu_results:
+                    expert_output = expert_output.view(-1, hidden_dim)
+                    inps_after_experts = inps_after_experts.view(-1, hidden_dim)
+                    inps_after_experts.index_add_(
+                        0,
+                        mask_index.to(self.dev),
+                        expert_output.to(self.dev).to(inps_after_experts.dtype),
+                    )
+                    inps_after_experts = inps_after_experts.view(
+                        batch_size, seq_len, hidden_dim
+                    )
 
                 # addition because there's residual connection over moe layer
                 total_expert_output = shared_output + inps_after_experts
@@ -2000,7 +1826,6 @@ class FiddlerDeepSeekV2:
         elif token_count > 1:
             expert_status = "hot"
 
-        # 记录统计信息
         self.current_iter_expert_stats[i_layer]["expert_ids"].append(i_expert)
         self.current_iter_expert_stats[i_layer]["token_counts"].append(token_count)
 
@@ -2040,7 +1865,6 @@ class FiddlerDeepSeekV2:
             token_count = record["token_count"]
             expert_status = record["status"]
 
-            # 原有hot/veryhot统计
             stats["hot_experts"][layer]["count"] += 1
             if expert_status == "hot":
                 stats["hot_experts"][layer]["hot"] += 1

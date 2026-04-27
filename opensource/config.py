@@ -36,8 +36,16 @@ class ModelConfig:
     # 性能参数 (来自 microbench)
     e: float = 1.11
     tg: float = 0.20
+    tc: float = 0.0
     cpu_time_table: List[float] = field(default_factory=list)
     cpu_time_table_file: str = ""
+
+    def get_tc(self) -> float:
+        if self.tc > 0:
+            return self.tc
+        if self.cpu_time_table and len(self.cpu_time_table) > 1:
+            return self.cpu_time_table[1]
+        return 5.0
 
     # 运行配置
     batch_size: int = 1
