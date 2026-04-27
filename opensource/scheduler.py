@@ -2,11 +2,12 @@
 MoE 专家调度策略模块
 
 提供:
-- ExpertScheduler: 专家调度策略基类
-- ondemand 决策算法（从各模型文件提取）
-- 预取策略开关
+- ExpertScheduler: 专家调度策略类
+- Decode: 四模式负载均衡 (A/B/C/default)
+- Prefill: 三步调度法 (全局排序→局部重排→置信度预取)
 """
 
+import math
 from typing import List, Tuple
 from config import ModelConfig
 
@@ -24,97 +25,6 @@ class ExpertScheduler:
             4
         )
 
-    def decide_ondemand(
-        self, sorted_experts: List[Tuple[int, int]], is_decode: bool
-    ) -> List[int]:
-        """
-        根据 e/tg 和 CPU 时间表决定哪些专家做 ondemand 加载
-
-        参数:
-            sorted_experts: 按token数降序排序的专家列表 [(expert_id, token_count), ...]
-            is_decode: 是否为decode阶段
-
-        返回:
-            ondemand_experts: 需要做ondemand加载的专家ID列表
-        """
-        n = len(sorted_experts)
-        ondemand_experts = []
-
-        if n == 0:
-            return ondemand_experts
-
-        cpu_table_max_idx = len(self.cpu_time_table) - 1
-
-        TA = 0.0
-        for _, tokens in sorted_experts:
-            idx = min(tokens, cpu_table_max_idx) if cpu_table_max_idx >= 0 else 0
-            if self.cpu_time_table and idx < len(self.cpu_time_table):
-                TA += self.cpu_time_table[idx]
-
-        TC = TA
-        total_ondemand_cost = 0.0
-
-        for i in range(n - 1):
-            expert_id, token_count = sorted_experts[i]
-
-            TG_i = self.e + self.tg
-            TG = total_ondemand_cost + TG_i
-
-            idx = min(token_count, cpu_table_max_idx) if cpu_table_max_idx >= 0 else 0
-            cpu_time_i = 0.0
-            if self.cpu_time_table and idx < len(self.cpu_time_table):
-                cpu_time_i = self.cpu_time_table[idx]
-
-            TC -= cpu_time_i
-
-            if is_decode:
-                if TG < TC:
-                    ondemand_experts.append(expert_id)
-                    total_ondemand_cost += TG_i
-
-                    if i == n - 2:
-                        if TC - TG > self.e:
-                            if i + 1 < len(sorted_experts):
-                                ondemand_experts.append(sorted_experts[i + 1][0])
-                                total_ondemand_cost += TG_i
-                        elif TC - TG > self.e / 2:
-                            self._set_prefil_pre(True)
-                elif TC > total_ondemand_cost:
-                    ondemand_experts.append(expert_id)
-                    total_ondemand_cost += TG_i
-                else:
-                    break
-            else:
-                idx_prefill = (
-                    min(token_count, cpu_table_max_idx) if cpu_table_max_idx >= 0 else 0
-                )
-                cpu_time_token = (
-                    self.cpu_time_table[idx_prefill]
-                    if (self.cpu_time_table and idx_prefill < len(self.cpu_time_table))
-                    else 0.0
-                )
-
-                if TG < TC + cpu_time_token:
-                    ondemand_experts.append(expert_id)
-                    total_ondemand_cost += TG_i
-                else:
-                    break
-
-        return ondemand_experts
-
-    def should_prefetch(self, layer_id: int, expert_id: int) -> bool:
-        """
-        是否预取该专家
-
-        返回:
-            bool: 是否应该预取
-        """
-        return self.config.prefetch_enabled
-
-    def _set_prefil_pre(self, value: bool):
-        """设置 prefil_pre 标志（供模型类使用）"""
-        pass
-
     def set_cpu_time_table(self, table: List[float]):
         """设置 CPU 时间表"""
         self.cpu_time_table = table
@@ -124,7 +34,7 @@ class ExpertScheduler:
 
     def decide_decode(
         self, r_cur: int, r_next: int, k: int
-    ) -> Tuple[str, int, int]:
+    ) -> Tuple[str, int, int, int]:
         """
         Decode 阶段负载均衡调度
 
@@ -134,30 +44,203 @@ class ExpertScheduler:
             k: 当前层选中的专家总数
 
         返回:
-            (mode, ondemand_count, prefetch_count)
+            (mode, ondemand_count, prefetch_count, offload_count)
             mode: "A" | "B" | "C" | "default"
             ondemand_count: 当前层需要ondemand加载的专家数
             prefetch_count: 下一层需要prefetch的专家数
+            offload_count: 当前层需要释放的未使用预取专家数
         """
         if k == 0:
-            return "C", 0, 0
+            return "C", 0, 0, 0
 
-        n_g = k * self.tc / (self.tg + self.tc) if (self.tg + self.tc) > 0 else 0
-        n_g = max(0, min(k, int(round(n_g))))
+        n_g = self._compute_optimal_gpu_count(k)
 
         cur_below = r_cur < n_g
         next_below = r_next < n_g
 
         if not cur_below and not next_below:
-            return "C", 0, 0
+            offload = r_cur - n_g
+            return "C", 0, 0, offload
         elif cur_below and not next_below:
             ondemand = min(n_g - r_cur, self.max_ondemand)
-            return "A", ondemand, 0
+            return "A", ondemand, 0, 0
         elif not cur_below and next_below:
             prefetch = min(n_g - r_next, self.max_ondemand)
-            return "B", 0, prefetch
+            offload = r_cur - n_g
+            return "B", 0, prefetch, offload
         else:
-            ondemand = min(n_g - r_cur, self.max_ondemand)
-            prefetch = min(n_g - r_next, self.max_ondemand, self.max_ondemand - ondemand)
-            prefetch = max(0, prefetch)
-            return "default", ondemand, prefetch
+            ondemand_need = n_g - r_cur
+            prefetch_need = n_g - r_next
+            total_budget = self.max_ondemand
+            if ondemand_need + prefetch_need <= total_budget:
+                ondemand = ondemand_need
+                prefetch = prefetch_need
+            else:
+                ondemand = min(ondemand_need, total_budget // 2 + total_budget % 2)
+                prefetch = min(prefetch_need, total_budget - ondemand)
+            return "default", ondemand, prefetch, 0
+
+    def _compute_optimal_gpu_count(self, k: int) -> int:
+        """
+        n_g^ρ = argmin max(n_g · tg, (k - n_g) · tc)
+        精确比较 floor 和 ceil 两个候选值
+        """
+        if k <= 0:
+            return 0
+        if self.tc <= 0 or self.tg <= 0:
+            return min(k, self.max_ondemand)
+
+        n_g_balanced = k * self.tc / (self.tg + self.tc)
+        n_g_floor = max(0, int(math.floor(n_g_balanced)))
+        n_g_ceil = min(k, int(math.ceil(n_g_balanced)))
+
+        if n_g_floor == n_g_ceil:
+            return n_g_floor
+
+        cost_floor = max(n_g_floor * self.tg, (k - n_g_floor) * self.tc)
+        cost_ceil = max(n_g_ceil * self.tg, (k - n_g_ceil) * self.tc)
+
+        return n_g_floor if cost_floor <= cost_ceil else n_g_ceil
+
+    def decide_prefill_schedule(
+        self,
+        cur_sorted_experts: List[Tuple[int, int]],
+        next_sorted_experts: List[Tuple[int, int]],
+        cur_gpu_resident: int = 0,
+        is_last_layer: bool = False,
+        r_hit: float = 0.7,
+    ) -> Tuple[List[int], List[int], int]:
+        """
+        Prefill 三步调度法 (Algorithm 1, Line 8-23)
+
+        Step 1: 全局排序 - 合并两层专家，增量累积 TG 找 GPU/CPU 边界
+        Step 2: 局部重排 - L_global ∩ E_cur 确保当前层不被饿死
+        Step 3: 置信度预取 - 利用 I/O bubble，逐专家计算 ξ，含 f-1 回退
+
+        参数:
+            cur_sorted_experts: 当前层非GPU驻留专家 [(expert_id, token_count), ...] 按token降序
+            next_sorted_experts: 下一层非GPU驻留专家 [(expert_id, token_count), ...] 按token降序
+            cur_gpu_resident: 当前层已驻留GPU的专家数
+            is_last_layer: 是否最后一层（最后一层不做预取）
+            r_hit: 预测命中率 (默认0.7)
+
+        返回:
+            (ondemand_experts, prefetch_experts, prefetch_count)
+        """
+        if not cur_sorted_experts and not next_sorted_experts:
+            return [], [], 0
+
+        t_io = self.e
+        t_g = self.tg
+        cpu_table_max_idx = len(self.cpu_time_table) - 1
+
+        # ============ Step 1: Global Ranking (Algorithm 1 Line 8-12) ============
+        # 合并两层专家，标记来源，按token数升序排列（小token在前）
+        e_all = []
+        for eid, tokens in cur_sorted_experts:
+            e_all.append((eid, tokens, "cur"))
+        for eid, tokens in next_sorted_experts:
+            e_all.append((eid, tokens, "next"))
+        e_all.sort(key=lambda x: x[1])
+
+        n_total = len(e_all)
+
+        # 增量式扫描: TG 累积增加(每加一个专家多一次传输), TC 递减(专家离开CPU)
+        # T_G = (1+i)*t_io + t_g, T_C = 剩余专家的CPU总时间
+        # 当 T_G < T_C 时 break，右侧大token专家进 L_global
+        T_C_all = sum(
+            self._lookup_cpu_time(t, cpu_table_max_idx) for _, t, _ in e_all
+        )
+        T_G_cum = 0.0
+
+        l_global_cur = []
+        l_global_next = []
+
+        for i in range(n_total):
+            eid, tokens, origin = e_all[i]
+            T_G_cum += t_io
+            cpu_time_i = self._lookup_cpu_time(tokens, cpu_table_max_idx)
+            T_C_all -= cpu_time_i
+
+            if T_G_cum + t_g < T_C_all:
+                if origin == "cur":
+                    l_global_cur.append((eid, tokens))
+                else:
+                    l_global_next.append((eid, tokens))
+
+        # ============ Step 2: Local Re-ranking (Algorithm 1 Line 13-15) ============
+        # L_global ∩ E_cur: 只在当前层专家中找边界，防止被下层饿死
+        if not l_global_cur:
+            return [], [eid for eid, _ in l_global_next], len(l_global_next)
+
+        # 当前层专家按 token 升序（小在前），增量扫描 ondemand 边界
+        l_global_cur.sort(key=lambda x: x[1])
+        n_cur = len(l_global_cur)
+
+        T_C_local = sum(
+            self._lookup_cpu_time(t, cpu_table_max_idx) for _, t in l_global_cur
+        )
+        T_G_local_cum = 0.0
+
+        ondemand_experts = []
+        for i_prime in range(n_cur):
+            eid, tokens = l_global_cur[i_prime]
+            T_G_local_cum += t_io
+            cpu_time_i = self._lookup_cpu_time(tokens, cpu_table_max_idx)
+            T_C_local -= cpu_time_i
+
+            if T_G_local_cum + t_g < T_C_local:
+                ondemand_experts.append(eid)
+
+        ondemand_experts = ondemand_experts[: self.max_ondemand]
+
+        # ============ Step 3: Confidence-aware Prefetch (Algorithm 1 Line 16-23) ============
+        # 计算 I/O bubble, 逐专家评估 ξ, 含 f-1 回退
+        prefetch_experts = []
+        prefetch_count = 0
+
+        if not is_last_layer and l_global_next:
+            T_G_final = len(ondemand_experts) * t_io + t_g
+            T_C_final = T_C_local
+            T_gap = T_C_final - T_G_final
+
+            if T_gap > 0 and t_io > 0:
+                f = int(math.floor(T_gap / t_io))
+
+                # 逐专家计算边际期望效用 ξ
+                # R_hit 随排序递减: 第 i 个专家的命中率 = max(0.5, r_hit - i*0.1)
+                for i, (eid, _) in enumerate(l_global_next):
+                    if i >= f + 1:
+                        break
+                    r_i = max(0.5, r_hit - i * 0.1)
+
+                    # 第 i 个预取的期望收益
+                    if i < f:
+                        xi = (2 * r_i - 1) * t_io
+                    else:
+                        # 边际专家 (f+1 th): 考虑气泡剩余时间
+                        fractional = (T_gap / t_io) - f
+                        xi = (
+                            r_i * fractional * t_io
+                            - (1 - r_i) * (1 - fractional) * t_io
+                        )
+
+                    if xi > 0:
+                        prefetch_experts.append(eid)
+                    else:
+                        # f-1 回退: 预取量减 1 后成本更低，可能重新变正
+                        break
+
+                prefetch_count = len(prefetch_experts)
+                prefetch_count = min(prefetch_count, self.max_ondemand)
+                prefetch_experts = prefetch_experts[:prefetch_count]
+
+        return ondemand_experts, prefetch_experts, prefetch_count
+
+    def _lookup_cpu_time(self, tokens: int, max_idx: int) -> float:
+        if not self.cpu_time_table or max_idx < 0:
+            return 0.0
+        idx = min(tokens, max_idx)
+        if idx < len(self.cpu_time_table):
+            return self.cpu_time_table[idx]
+        return 0.0

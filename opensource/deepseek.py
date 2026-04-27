@@ -156,6 +156,8 @@ class FiddlerDeepSeekV2:
 
         # 专家命中统计
         self.cnt_expert_hit = 0
+        self.cnt_prefetch_hit = 0
+        self.cnt_gpu_available = 0
         self.cnt_expert_all = 0
 
         # ========== GPU资源分配 ==========
@@ -648,7 +650,9 @@ class FiddlerDeepSeekV2:
 
         # 初始化统计
         self.cnt_expert_hit = 0
-        self.cnt_expert_all = 0  # 改为0，每次generate时正确计数
+        self.cnt_prefetch_hit = 0
+        self.cnt_gpu_available = 0
+        self.cnt_expert_all = 0
         self.expert_selection_stats = []
         self.expert_time_stats = []
 
@@ -821,12 +825,25 @@ class FiddlerDeepSeekV2:
         print(f"Input: {text}")
         print(f"Output: {decode_strings[max_ids[0]]}")
         prof.stop()
+
+        n = self.cnt_expert_all if self.cnt_expert_all > 0 else 1
+        hit_rates = {
+            "hot_hit_rate": self.cnt_expert_hit / n,
+            "prefetch_hit_rate": self.cnt_prefetch_hit / n,
+            "gpu_available_rate": self.cnt_gpu_available / n,
+            "hot_hits": self.cnt_expert_hit,
+            "prefetch_hits": self.cnt_prefetch_hit,
+            "gpu_available": self.cnt_gpu_available,
+            "total_experts": self.cnt_expert_all,
+        }
+        print(f"  Hot表命中率: {hit_rates['hot_hit_rate']:.2%} ({self.cnt_expert_hit}/{self.cnt_expert_all})")
+        print(f"  预取命中率:  {hit_rates['prefetch_hit_rate']:.2%} ({self.cnt_prefetch_hit}/{self.cnt_expert_all})")
+        print(f"  GPU可用率:   {hit_rates['gpu_available_rate']:.2%} ({self.cnt_gpu_available}/{self.cnt_expert_all})")
+
         return (
             prefill_time,
             decode_time,
-            self.cnt_expert_hit / self.cnt_expert_all
-            if self.cnt_expert_all > 0
-            else 0.0,
+            hit_rates,
             {
                 "perf_stats": self.perf_stats,
                 "expert_selection": self.expert_selection_stats,
@@ -1096,10 +1113,11 @@ class FiddlerDeepSeekV2:
                 # 直接使用过滤后的结果，不需要再次排序
                 sorted_experts = list(zip(filtered_expert_ids, filtered_token_counts))
 
-                # ===== 7. Next layer prediction + decode scheduling =====
+                # ===== 7. Next layer prediction =====
                 selected_expert_ids = selected_experts.unique().tolist()
                 next_predicted_expert_ids = []
                 next_sorted_experts = []
+                next_sorted_experts_filtered = []
                 if i_layer < self.n_layer - 1:
                     next_layer = self.model.layers[i_layer + 1]
                     with torch.no_grad():
@@ -1122,6 +1140,10 @@ class FiddlerDeepSeekV2:
                         expert[0] for expert in next_sorted_experts
                     ]
 
+                    for eid, tokens in next_sorted_experts:
+                        if not self._is_expert_available_on_gpu(i_layer + 1, eid):
+                            next_sorted_experts_filtered.append((eid, tokens))
+
                 # ===== 8. Scheduling decision =====
                 if self.is_decode:
                     k = len(selected_expert_ids)
@@ -1133,17 +1155,23 @@ class FiddlerDeepSeekV2:
                         if i_layer < self.n_layer - 1
                         else k
                     )
-                    mode, ondemand_count, prefetch_count = (
+                    mode, ondemand_count, prefetch_count, offload_count = (
                         self.scheduler.decide_decode(r_cur, r_next, k)
                     )
                     ondemand_experts = []
+                    prefetch_experts = []
                 else:
                     mode = "prefill"
-                    ondemand_count = 0
-                    prefetch_count = 0
-                    ondemand_experts = self.scheduler.decide_ondemand(
-                        sorted_experts, self.is_decode
+                    r_cur = self._count_gpu_residents(i_layer, selected_expert_ids)
+                    ondemand_experts, prefetch_experts, prefetch_count = (
+                        self.scheduler.decide_prefill_schedule(
+                            sorted_experts,
+                            next_sorted_experts_filtered,
+                            cur_gpu_resident=r_cur,
+                            is_last_layer=(i_layer >= self.n_layer - 1),
+                        )
                     )
+                    ondemand_count = len(ondemand_experts)
 
                 # ===== 9. Expert classification =====
                 experts_in_placeholder = []
@@ -1171,13 +1199,30 @@ class FiddlerDeepSeekV2:
 
                 for i_expert in selected_expert_ids:
                     self.cnt_expert_all += 1
-                    if self.expert_loc[
-                        i_layer, i_expert
-                    ] == 1 and self.is_expert_in_gpu_now(i_layer, i_expert):
+
+                    is_hot = (
+                        self.expert_loc[i_layer, i_expert] == 1
+                        and self.is_expert_in_gpu_now(i_layer, i_expert)
+                    )
+                    is_prefetched = (
+                        i_layer in self.prefetch_list
+                        and i_expert in self.prefetch_list[i_layer]
+                    )
+                    is_loading = (
+                        i_layer in self.prefetching_list
+                        and i_expert in self.prefetching_list[i_layer]
+                    )
+                    is_placeholder = any(
+                        stored and stored == (i_layer, i_expert)
+                        for stored in self._ph_mapping
+                    )
+
+                    if is_hot:
                         self.cnt_expert_hit += 1
-                        self.logger.log_expert_hit(True)
-                    else:
-                        self.logger.log_expert_hit(False)
+                    if is_hot or is_prefetched or is_placeholder:
+                        self.cnt_gpu_available += 1
+                        self.cnt_prefetch_hit += (not is_hot)
+                    self.logger.log_expert_hit(is_hot or is_prefetched or is_placeholder)
 
                     if self.is_expert_in_gpu_now(i_layer, i_expert):
                         gpu_experts.append(i_expert)
@@ -1216,25 +1261,66 @@ class FiddlerDeepSeekV2:
                             cpu_experts.append(i_expert)
                             self.logger.log_expert_class("cpu")
 
+                # ===== 9.5 Release unused prefetched experts =====
+                # 释放当前层已预取但未选中的专家，释放占位槽供下层使用
+                if i_layer in self.prefetch_list:
+                    selected_set = set(selected_expert_ids)
+                    unused_prefetched = [
+                        eid for eid in self.prefetch_list[i_layer]
+                        if eid not in selected_set
+                    ]
+                    for eid in unused_prefetched:
+                        key = (i_layer, eid)
+                        if key in self.expert_to_placeholder:
+                            ph_obj = self.expert_to_placeholder[key]
+                            for idx, ph in enumerate(self._placeholders):
+                                if ph is ph_obj:
+                                    self._release_placeholder_by_index(idx)
+                                    break
+                        self.prefetch_list[i_layer].remove(eid)
+
+                # ===== 9.6 Offload excess placeholder experts (Mode B/C) =====
+                # 当 offload_count > 0 时，将占位专家中的冗余选中专家降级到 CPU
+                # 释放占位槽给下层预取使用
+                if self.is_decode and offload_count > 0 and experts_in_placeholder:
+                    to_offload = min(offload_count, len(experts_in_placeholder))
+                    offloaded = experts_in_placeholder[-to_offload:]
+                    experts_in_placeholder = experts_in_placeholder[:-to_offload]
+                    for eid in offloaded:
+                        key = (i_layer, eid)
+                        if key in self.expert_to_placeholder:
+                            ph_obj = self.expert_to_placeholder[key]
+                            for idx, ph in enumerate(self._placeholders):
+                                if ph is ph_obj:
+                                    self._release_placeholder_by_index(idx)
+                                    break
+                        if i_layer in self.prefetch_list and eid in self.prefetch_list[i_layer]:
+                            self.prefetch_list[i_layer].remove(eid)
+                        cpu_experts.append(eid)
+
                 # ===== 10. Next layer prefetch =====
-                if (
-                    i_layer < self.n_layer - 1
-                    and self.config.prefetch_enabled
-                    and self.is_decode
-                    and mode in ("B", "default")
-                ):
+                do_prefetch = False
+                experts_to_prefetch = []
+                if i_layer < self.n_layer - 1 and self.config.prefetch_enabled:
+                    if self.is_decode and mode in ("B", "default"):
+                        if prefetch_count > 0:
+                            experts_to_prefetch = next_predicted_expert_ids[:prefetch_count]
+                        else:
+                            experts_to_prefetch = [
+                                e[0] for e in next_sorted_experts[: self.cache]
+                            ]
+                        do_prefetch = True
+                    elif not self.is_decode and prefetch_experts:
+                        experts_to_prefetch = prefetch_experts
+                        do_prefetch = True
+
+                if do_prefetch:
                     next_layer_idx = i_layer + 1
                     if next_layer_idx not in self.prefetch_list:
                         self.prefetch_list[next_layer_idx] = []
                     if next_layer_idx not in self.prefetching_list:
                         self.prefetching_list[next_layer_idx] = []
                     prefetch_tasks = []
-                    if prefetch_count > 0:
-                        experts_to_prefetch = next_predicted_expert_ids[:prefetch_count]
-                    else:
-                        experts_to_prefetch = [
-                            e[0] for e in next_sorted_experts[: self.cache]
-                        ]
                     for expert_id in experts_to_prefetch:
                         if not self.is_expert_in_gpu_now(next_layer_idx, expert_id):
                             if (

@@ -279,7 +279,12 @@ def main():
     print(f"预取策略: {'启用' if config.prefetch_enabled else '禁用'}")
     print(f"详细结果将保存到: {detailed_result_file}")
 
-    prefill_time_sum, decode_time_sum, hit_rate_sum = 0, 0, 0
+    prefill_time_sum, decode_time_sum = 0, 0
+    hit_rate_accum = {
+        "hot_hit_rate": 0.0,
+        "prefetch_hit_rate": 0.0,
+        "gpu_available_rate": 0.0,
+    }
 
     os.makedirs(config.log_dir, exist_ok=True)
     os.makedirs("./result", exist_ok=True)
@@ -325,7 +330,8 @@ def main():
 
             prefill_time_sum += prefill_time
             decode_time_sum += decode_time
-            hit_rate_sum += hit_rate
+            for key in hit_rate_accum:
+                hit_rate_accum[key] += hit_rate.get(key, 0)
 
             print("\n性能开销统计:")
             for stat_name, times in stats["perf_stats"].items():
@@ -340,7 +346,9 @@ def main():
             f_detailed.write(f"{'=' * 80}\n")
             f_detailed.write(
                 f"Prefill时间: {prefill_time:.2f}s, Decode时间: {decode_time:.2f}s, "
-                f"命中率: {hit_rate:.2f}\n\n"
+                f"热表命中: {hit_rate['hot_hit_rate']:.2%}, "
+                f"预取命中: {hit_rate['prefetch_hit_rate']:.2%}, "
+                f"GPU可用: {hit_rate['gpu_available_rate']:.2%}\n\n"
             )
 
             f_detailed.write("输入样本:\n")
@@ -368,13 +376,16 @@ def main():
         * n_sample
         / (prefill_time_sum + decode_time_sum)
     )
+    avg_hit = {k: v / n_sample for k, v in hit_rate_accum.items()}
     summary = f"""
 {"=" * 80}
 测试完成汇总 (batch_size={config.batch_size})
 {"=" * 80}
 平均Prefill时间: {prefill_time_sum / n_sample:.2f}s
 平均Decode时间: {decode_time_sum / n_sample:.2f}s
-平均命中率: {hit_rate_sum / n_sample:.2f}
+平均热表命中率: {avg_hit['hot_hit_rate']:.2%}
+平均预取命中率: {avg_hit['prefetch_hit_rate']:.2%}
+平均GPU可用率:  {avg_hit['gpu_available_rate']:.2%}
 总吞吐: {throughput:.2f} token/s
 {"=" * 80}
 """
