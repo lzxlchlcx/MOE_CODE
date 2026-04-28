@@ -86,6 +86,12 @@ class FiddlerDeepSeekV2:
             trust_remote_code=True,
         )
 
+        # Monkey-patch DynamicCache for compatibility with cached modeling file
+        if not hasattr(transformers.cache_utils.DynamicCache, "get_usable_length"):
+            transformers.cache_utils.DynamicCache.get_usable_length = (
+                lambda self, seq_len, layer_idx: self.get_seq_length(layer_idx)
+            )
+
         # ========== 批处理配置 ==========
         self.batch_size = self.config.batch_size
         self.cache = self.config.cache
@@ -126,7 +132,7 @@ class FiddlerDeepSeekV2:
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # ========== KV缓存初始化 ==========
-        self.past_key_value = transformers.cache_utils.DynamicCache.from_legacy_cache()
+        self.past_key_value = transformers.cache_utils.DynamicCache()
         self.past_key_values_length = 0
 
         # ========== 推理配置 ==========
@@ -181,6 +187,8 @@ class FiddlerDeepSeekV2:
 
         # ========== S1: Pre-pin all CPU expert weights ==========
         for layer in self.model.layers:
+            if not hasattr(layer.mlp, "experts"):
+                continue
             for expert in layer.mlp.experts:
                 for name in ["gate_proj", "up_proj", "down_proj"]:
                     w = getattr(expert, name, None)
@@ -652,7 +660,7 @@ class FiddlerDeepSeekV2:
         torch.set_num_threads(self.config.cpu_threads)
 
         # 初始化KV缓存
-        self.past_key_value = transformers.cache_utils.DynamicCache.from_legacy_cache()
+        self.past_key_value = transformers.cache_utils.DynamicCache()
         self.past_key_values_length = 0
 
         # 初始化统计
@@ -662,6 +670,14 @@ class FiddlerDeepSeekV2:
         self.cnt_expert_all = 0
         self.expert_selection_stats = []
         self.expert_time_stats = []
+
+        self._gate_predictions = {}
+        self._gate_pred_stats = {
+            'total_layers': 0,
+            'total_actual': 0,
+            'total_predicted': 0,
+            'total_overlap': 0,
+        }
 
         # 处理输入文本
         if text is None:
@@ -847,6 +863,13 @@ class FiddlerDeepSeekV2:
         print(f"  预取命中率:  {hit_rates['prefetch_hit_rate']:.2%} ({self.cnt_prefetch_hit}/{self.cnt_expert_all})")
         print(f"  GPU可用率:   {hit_rates['gpu_available_rate']:.2%} ({self.cnt_gpu_available}/{self.cnt_expert_all})")
 
+        gs = self._gate_pred_stats
+        if gs['total_layers'] > 0:
+            precision = gs['total_overlap'] / gs['total_predicted'] if gs['total_predicted'] > 0 else 0
+            recall = gs['total_overlap'] / gs['total_actual'] if gs['total_actual'] > 0 else 0
+            print(f"  门控预测准确率: {precision:.2%} (命中{gs['total_overlap']}/预测{gs['total_predicted']}, "
+                  f"召回{recall:.2%}, {gs['total_layers']}层)")
+
         return (
             prefill_time,
             decode_time,
@@ -981,12 +1004,9 @@ class FiddlerDeepSeekV2:
                 # ===== 1. 释放占位专家 =====
                 self.release_placeholder(i_layer, 0)
 
-                # 等待上一层的异步预取完成（线程+CUDA Stream）
-                if (
-                    self._prefetch_thread is not None
-                    and self._prefetch_thread.is_alive()
-                ):
-                    self._prefetch_thread.join()
+                # 等待上一层的异步预取完成（Future + CUDA Stream）
+                if self._prefetch_thread is not None:
+                    self._prefetch_thread.result()
                 torch.cuda.synchronize(self._prefetch_stream)
 
                 # 保存残差
@@ -1122,6 +1142,17 @@ class FiddlerDeepSeekV2:
 
                 # ===== 7. Next layer prediction =====
                 selected_expert_ids = selected_experts.unique().tolist()
+
+                if hasattr(self, '_gate_predictions') and i_layer in self._gate_predictions:
+                    predicted = self._gate_predictions.pop(i_layer)
+                    actual_set = set(selected_expert_ids)
+                    predicted_set = set(predicted)
+                    overlap = actual_set & predicted_set
+                    self._gate_pred_stats['total_layers'] += 1
+                    self._gate_pred_stats['total_actual'] += len(actual_set)
+                    self._gate_pred_stats['total_predicted'] += len(predicted_set)
+                    self._gate_pred_stats['total_overlap'] += len(overlap)
+
                 next_predicted_expert_ids = []
                 next_sorted_experts = []
                 next_sorted_experts_filtered = []
@@ -1150,6 +1181,8 @@ class FiddlerDeepSeekV2:
                     for eid, tokens in next_sorted_experts:
                         if not self._is_expert_available_on_gpu(i_layer + 1, eid):
                             next_sorted_experts_filtered.append((eid, tokens))
+
+                    self._gate_predictions[i_layer + 1] = next_predicted_expert_ids
 
                 # ===== 8. Scheduling decision =====
                 if self.is_decode:
