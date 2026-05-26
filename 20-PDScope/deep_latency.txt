@@ -1,3 +1,0 @@
-batchsize: 1input_token: 128, output_token: 32, prefill_time: 14.306721925735474, decode_time: 12.031066417694092, hit_rate: 0.0,1.21token/s
-batchsize: 1input_token: 128, output_token: 32, prefill_time: 13.791152636210123, decode_time: 11.064988692601522, hit_rate: 0.0,1.29token/s
-batchsize: 1input_token: 128, output_token: 32, prefill_time: 3.672811190287272, decode_time: 6.114197413126628, hit_rate: 0.0,3.27token/s

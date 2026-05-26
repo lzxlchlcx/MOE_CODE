@@ -14,4 +14,8 @@ datasets/*
 AGENTS.md
 kilo/
 
+# 其他
+.kilo/
+.kilocode/
+.claude/
 
