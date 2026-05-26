@@ -1,0 +1,17 @@
+# 临时文件
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 测试结果和日志
+30-resource/*
+20-PDScope/*
+10-fiddler-main/*
+datasets/*
+
+# 旧文件（已融合到CLAUDE.md）
+AGENTS.md
+kilo/
+
+

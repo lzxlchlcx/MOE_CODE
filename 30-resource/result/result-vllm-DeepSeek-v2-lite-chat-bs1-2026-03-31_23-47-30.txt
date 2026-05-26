@@ -1,0 +1,39 @@
+================================================================================
+vLLM MoE模型基准测试报告
+测试时间: 2026-03-31 23:49:26
+模型: /mnt/g/Models/DeepSeek-v2-lite-chat
+配置: batch_size=1, input_token=128, output_token=32
+Tensor parallel size: 1
+GPU memory utilization: 0.9
+Max model len: 2048
+Quantization: None
+Enforce eager: True
+================================================================================
+
+
+================================================================================
+样本 1/1
+================================================================================
+总时间: 61.92s, 总token数: 161
+吞吐: 2.60 token/s
+
+输入样本:
+样本 1: Project Description: The Catalog Inventory Trading Management System is a microservices-based platform that enables businesses to manage their inventory and trading activities in a centralized and efficient manner. Developed using .NET, MongoDB, RabbitMQ, OpenID, and Identity Server, the system was designed to handle various functionalities such as inventory management, order management, customer management, and reporting. Additionally, the system allows for integration with other third-party systems for seamless trading activities. Key Responsibilities: * Led the development of the system from scratch and guided a team of developers to deliver a highly functional platform. * Implemented best practices for building complete microservices REST
+
+生成结果:
+结果 1:  APIs * Implemented efficient error handling and logging mechanisms to ensure system stability and reliability. * Ensured the security of the system by implementing best practices for authentication and
+
+
+
+================================================================================
+vLLM 基准测试完成汇总
+================================================================================
+模型: /mnt/g/Models/DeepSeek-v2-lite-chat
+Batch size: 1
+Tensor parallel size: 1
+
+平均总时间: 61.92s
+平均Prefill时间: 18.58s (估算)
+平均Decode时间: 43.35s (估算)
+总吞吐: 2.60 token/s
+================================================================================

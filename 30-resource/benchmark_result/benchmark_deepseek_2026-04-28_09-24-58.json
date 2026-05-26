@@ -1,0 +1,918 @@
+[
+  {
+    "config": {
+      "batch_size": 1,
+      "prefetch_enabled": false,
+      "e": 0.85,
+      "tg": 0.35,
+      "tc": 2.1444
+    },
+    "hit_rates": {
+      "hot_hit_rate": 0.7312021611886538,
+      "prefetch_hit_rate": 0.0,
+      "gpu_available_rate": 0.7312021611886538,
+      "hot_hit_rate_std": 0.0,
+      "prefetch_hit_rate_std": 0.0,
+      "gpu_available_rate_std": 0.0
+    },
+    "parallelism": {
+      "avg_parallel_degree": 1.064800151632223,
+      "max_parallel_degree": 1.9761541105044103,
+      "min_parallel_degree": 0.939640305493964,
+      "std_parallel_degree": 0.23741972312836798
+    },
+    "throughput": {
+      "avg": 1.5773314709961415,
+      "std": 0.0,
+      "prefill_avg": 2.7496635913848877,
+      "decode_avg": 2.3221936225891113
+    },
+    "expert_classification": {
+      "gpu": 1624,
+      "cpu": 401,
+      "ondemand": 196,
+      "prefetch": 0,
+      "loading": 0,
+      "placeholder": 0
+    },
+    "expert_classification_pct": {
+      "gpu": 73.12021611886537,
+      "cpu": 18.054930211616387,
+      "ondemand": 8.824853669518234,
+      "prefetch": 0.0,
+      "loading": 0.0,
+      "placeholder": 0.0
+    },
+    "layer_parallel_stats": {
+      "1": {
+        "avg_parallel_degree": 1.0884858914720463,
+        "avg_gpu_time_ms": 13.770967721939087,
+        "avg_cpu_time_ms": 8.525848388671875,
+        "avg_parallel_time_ms": 13.929098844528198,
+        "n_samples": 8
+      },
+      "2": {
+        "avg_parallel_degree": 1.087500918041766,
+        "avg_gpu_time_ms": 11.336654424667358,
+        "avg_cpu_time_ms": 6.065100431442261,
+        "avg_parallel_time_ms": 11.457353830337524,
+        "n_samples": 8
+      },
+      "3": {
+        "avg_parallel_degree": 1.090134028926587,
+        "avg_gpu_time_ms": 10.247111320495605,
+        "avg_cpu_time_ms": 4.867076873779297,
+        "avg_parallel_time_ms": 10.370761156082153,
+        "n_samples": 8
+      },
+      "4": {
+        "avg_parallel_degree": 1.0662772046678897,
+        "avg_gpu_time_ms": 9.035259485244751,
+        "avg_cpu_time_ms": 6.809473037719727,
+        "avg_parallel_time_ms": 11.222362518310547,
+        "n_samples": 8
+      },
+      "5": {
+        "avg_parallel_degree": 1.0829514774739573,
+        "avg_gpu_time_ms": 9.715467691421509,
+        "avg_cpu_time_ms": 6.7687928676605225,
+        "avg_parallel_time_ms": 10.946094989776611,
+        "n_samples": 8
+      },
+      "6": {
+        "avg_parallel_degree": 1.0364963606094408,
+        "avg_gpu_time_ms": 8.359044790267944,
+        "avg_cpu_time_ms": 8.696287870407104,
+        "avg_parallel_time_ms": 13.22704553604126,
+        "n_samples": 8
+      },
+      "7": {
+        "avg_parallel_degree": 1.0425954411666358,
+        "avg_gpu_time_ms": 8.101075887680054,
+        "avg_cpu_time_ms": 7.630705833435059,
+        "avg_parallel_time_ms": 11.934489011764526,
+        "n_samples": 8
+      },
+      "8": {
+        "avg_parallel_degree": 1.0752822327541152,
+        "avg_gpu_time_ms": 7.968544960021973,
+        "avg_cpu_time_ms": 5.0048828125,
+        "avg_parallel_time_ms": 9.184062480926514,
+        "n_samples": 8
+      },
+      "9": {
+        "avg_parallel_degree": 1.0557681244649932,
+        "avg_gpu_time_ms": 8.217573165893555,
+        "avg_cpu_time_ms": 6.414681673049927,
+        "avg_parallel_time_ms": 10.940372943878174,
+        "n_samples": 8
+      },
+      "10": {
+        "avg_parallel_degree": 1.043452510844077,
+        "avg_gpu_time_ms": 8.554250001907349,
+        "avg_cpu_time_ms": 8.368611335754395,
+        "avg_parallel_time_ms": 12.831658124923706,
+        "n_samples": 8
+      },
+      "11": {
+        "avg_parallel_degree": 1.0785567931281577,
+        "avg_gpu_time_ms": 8.124113082885742,
+        "avg_cpu_time_ms": 5.097001791000366,
+        "avg_parallel_time_ms": 9.273111820220947,
+        "n_samples": 8
+      },
+      "12": {
+        "avg_parallel_degree": 1.0472193025255054,
+        "avg_gpu_time_ms": 8.10512900352478,
+        "avg_cpu_time_ms": 6.682842969894409,
+        "avg_parallel_time_ms": 11.28929853439331,
+        "n_samples": 8
+      },
+      "13": {
+        "avg_parallel_degree": 1.0635662010924665,
+        "avg_gpu_time_ms": 8.277863264083862,
+        "avg_cpu_time_ms": 5.8546364307403564,
+        "avg_parallel_time_ms": 10.392457246780396,
+        "n_samples": 8
+      },
+      "14": {
+        "avg_parallel_degree": 1.0514362350981385,
+        "avg_gpu_time_ms": 8.018463850021362,
+        "avg_cpu_time_ms": 6.325393915176392,
+        "avg_parallel_time_ms": 10.893255472183228,
+        "n_samples": 8
+      },
+      "15": {
+        "avg_parallel_degree": 1.101352520405154,
+        "avg_gpu_time_ms": 8.575350046157837,
+        "avg_cpu_time_ms": 4.588425159454346,
+        "avg_parallel_time_ms": 8.687466382980347,
+        "n_samples": 8
+      },
+      "16": {
+        "avg_parallel_degree": 1.072207310533849,
+        "avg_gpu_time_ms": 8.319258689880371,
+        "avg_cpu_time_ms": 5.828142166137695,
+        "avg_parallel_time_ms": 9.898751974105835,
+        "n_samples": 8
+      },
+      "17": {
+        "avg_parallel_degree": 1.094325236589338,
+        "avg_gpu_time_ms": 8.235454559326172,
+        "avg_cpu_time_ms": 4.675149917602539,
+        "avg_parallel_time_ms": 8.677482604980469,
+        "n_samples": 8
+      },
+      "18": {
+        "avg_parallel_degree": 1.086042745212151,
+        "avg_gpu_time_ms": 8.687138557434082,
+        "avg_cpu_time_ms": 4.787325859069824,
+        "avg_parallel_time_ms": 9.56648588180542,
+        "n_samples": 8
+      },
+      "19": {
+        "avg_parallel_degree": 1.0483543643332855,
+        "avg_gpu_time_ms": 8.633643388748169,
+        "avg_cpu_time_ms": 8.146554231643677,
+        "avg_parallel_time_ms": 12.4320387840271,
+        "n_samples": 8
+      },
+      "20": {
+        "avg_parallel_degree": 1.0511587842224355,
+        "avg_gpu_time_ms": 8.986830711364746,
+        "avg_cpu_time_ms": 7.318854331970215,
+        "avg_parallel_time_ms": 12.05742359161377,
+        "n_samples": 8
+      },
+      "21": {
+        "avg_parallel_degree": 1.0319666776263396,
+        "avg_gpu_time_ms": 7.912486791610718,
+        "avg_cpu_time_ms": 8.298337459564209,
+        "avg_parallel_time_ms": 12.942850589752197,
+        "n_samples": 8
+      },
+      "22": {
+        "avg_parallel_degree": 1.0659680247929857,
+        "avg_gpu_time_ms": 8.46514105796814,
+        "avg_cpu_time_ms": 6.037592887878418,
+        "avg_parallel_time_ms": 10.294020175933838,
+        "n_samples": 8
+      },
+      "23": {
+        "avg_parallel_degree": 1.068131052457339,
+        "avg_gpu_time_ms": 8.368879556655884,
+        "avg_cpu_time_ms": 5.389869213104248,
+        "avg_parallel_time_ms": 9.96863842010498,
+        "n_samples": 8
+      },
+      "24": {
+        "avg_parallel_degree": 1.0692346233208765,
+        "avg_gpu_time_ms": 8.820652961730957,
+        "avg_cpu_time_ms": 5.752474069595337,
+        "avg_parallel_time_ms": 10.679095983505249,
+        "n_samples": 8
+      },
+      "25": {
+        "avg_parallel_degree": 1.043897204568276,
+        "avg_gpu_time_ms": 8.065283298492432,
+        "avg_cpu_time_ms": 7.048070430755615,
+        "avg_parallel_time_ms": 11.603057384490967,
+        "n_samples": 8
+      },
+      "26": {
+        "avg_parallel_degree": 1.0424426761099852,
+        "avg_gpu_time_ms": 8.740663528442383,
+        "avg_cpu_time_ms": 7.441073656082153,
+        "avg_parallel_time_ms": 12.762367725372314,
+        "n_samples": 8
+      }
+    }
+  },
+  {
+    "config": {
+      "batch_size": 1,
+      "prefetch_enabled": true,
+      "e": 0.85,
+      "tg": 0.35,
+      "tc": 2.1444
+    },
+    "hit_rates": {
+      "hot_hit_rate": 0.7312021611886538,
+      "prefetch_hit_rate": 0.00585321927059883,
+      "gpu_available_rate": 0.7370553804592526,
+      "hot_hit_rate_std": 0.0,
+      "prefetch_hit_rate_std": 0.0,
+      "gpu_available_rate_std": 0.0
+    },
+    "parallelism": {
+      "avg_parallel_degree": 1.060684370053548,
+      "max_parallel_degree": 1.963576990705853,
+      "min_parallel_degree": 0.9208801684076736,
+      "std_parallel_degree": 0.2339766120240625
+    },
+    "throughput": {
+      "avg": 1.035354874160212,
+      "std": 0.0,
+      "prefill_avg": 5.450329542160034,
+      "decode_avg": 2.276489734649658
+    },
+    "expert_classification": {
+      "gpu": 1624,
+      "cpu": 401,
+      "ondemand": 183,
+      "prefetch": 13,
+      "loading": 0,
+      "placeholder": 0
+    },
+    "expert_classification_pct": {
+      "gpu": 73.12021611886537,
+      "cpu": 18.054930211616387,
+      "ondemand": 8.239531742458352,
+      "prefetch": 0.585321927059883,
+      "loading": 0.0,
+      "placeholder": 0.0
+    },
+    "layer_parallel_stats": {
+      "1": {
+        "avg_parallel_degree": 1.0824344698696744,
+        "avg_gpu_time_ms": 12.80263066291809,
+        "avg_cpu_time_ms": 7.5341761112213135,
+        "avg_parallel_time_ms": 13.008207082748413,
+        "n_samples": 8
+      },
+      "2": {
+        "avg_parallel_degree": 1.0789308048525075,
+        "avg_gpu_time_ms": 11.385142803192139,
+        "avg_cpu_time_ms": 5.883216857910156,
+        "avg_parallel_time_ms": 11.511564254760742,
+        "n_samples": 8
+      },
+      "3": {
+        "avg_parallel_degree": 1.0936252139152935,
+        "avg_gpu_time_ms": 9.509503841400146,
+        "avg_cpu_time_ms": 4.506021738052368,
+        "avg_parallel_time_ms": 9.627461433410645,
+        "n_samples": 8
+      },
+      "4": {
+        "avg_parallel_degree": 1.0613534110215879,
+        "avg_gpu_time_ms": 8.90931487083435,
+        "avg_cpu_time_ms": 6.652742624282837,
+        "avg_parallel_time_ms": 11.23952865600586,
+        "n_samples": 8
+      },
+      "5": {
+        "avg_parallel_degree": 1.0660680776164722,
+        "avg_gpu_time_ms": 8.726894855499268,
+        "avg_cpu_time_ms": 6.546735763549805,
+        "avg_parallel_time_ms": 10.797977447509766,
+        "n_samples": 8
+      },
+      "6": {
+        "avg_parallel_degree": 1.0384462050998664,
+        "avg_gpu_time_ms": 8.183121681213379,
+        "avg_cpu_time_ms": 8.233308792114258,
+        "avg_parallel_time_ms": 12.603193521499634,
+        "n_samples": 8
+      },
+      "7": {
+        "avg_parallel_degree": 1.0532534897582375,
+        "avg_gpu_time_ms": 8.781760931015015,
+        "avg_cpu_time_ms": 7.581979036331177,
+        "avg_parallel_time_ms": 11.887580156326294,
+        "n_samples": 8
+      },
+      "8": {
+        "avg_parallel_degree": 1.0797152496642988,
+        "avg_gpu_time_ms": 7.854819297790527,
+        "avg_cpu_time_ms": 4.384785890579224,
+        "avg_parallel_time_ms": 8.802831172943115,
+        "n_samples": 8
+      },
+      "9": {
+        "avg_parallel_degree": 1.0533053701118733,
+        "avg_gpu_time_ms": 7.53822922706604,
+        "avg_cpu_time_ms": 5.676597356796265,
+        "avg_parallel_time_ms": 9.840160608291626,
+        "n_samples": 8
+      },
+      "10": {
+        "avg_parallel_degree": 1.0367463734283222,
+        "avg_gpu_time_ms": 8.440196514129639,
+        "avg_cpu_time_ms": 7.866948843002319,
+        "avg_parallel_time_ms": 12.834548950195312,
+        "n_samples": 8
+      },
+      "11": {
+        "avg_parallel_degree": 1.0759613122235105,
+        "avg_gpu_time_ms": 7.9822540283203125,
+        "avg_cpu_time_ms": 5.0001442432403564,
+        "avg_parallel_time_ms": 9.134858846664429,
+        "n_samples": 8
+      },
+      "12": {
+        "avg_parallel_degree": 1.0508597333786058,
+        "avg_gpu_time_ms": 7.7849626541137695,
+        "avg_cpu_time_ms": 6.1775147914886475,
+        "avg_parallel_time_ms": 10.402113199234009,
+        "n_samples": 8
+      },
+      "13": {
+        "avg_parallel_degree": 1.0596945528766506,
+        "avg_gpu_time_ms": 7.953554391860962,
+        "avg_cpu_time_ms": 5.3213536739349365,
+        "avg_parallel_time_ms": 9.93075966835022,
+        "n_samples": 8
+      },
+      "14": {
+        "avg_parallel_degree": 0.9809759014620381,
+        "avg_gpu_time_ms": 8.089512586593628,
+        "avg_cpu_time_ms": 372.7044463157654,
+        "avg_parallel_time_ms": 377.42429971694946,
+        "n_samples": 8
+      },
+      "15": {
+        "avg_parallel_degree": 1.0996687590289111,
+        "avg_gpu_time_ms": 8.966624736785889,
+        "avg_cpu_time_ms": 4.948943853378296,
+        "avg_parallel_time_ms": 9.213954210281372,
+        "n_samples": 8
+      },
+      "16": {
+        "avg_parallel_degree": 1.0646222246841508,
+        "avg_gpu_time_ms": 8.35198163986206,
+        "avg_cpu_time_ms": 6.052643060684204,
+        "avg_parallel_time_ms": 10.343044996261597,
+        "n_samples": 8
+      },
+      "17": {
+        "avg_parallel_degree": 1.100870824008577,
+        "avg_gpu_time_ms": 8.86446237564087,
+        "avg_cpu_time_ms": 4.594713449478149,
+        "avg_parallel_time_ms": 9.122073650360107,
+        "n_samples": 8
+      },
+      "18": {
+        "avg_parallel_degree": 1.0857226560156095,
+        "avg_gpu_time_ms": 8.741497993469238,
+        "avg_cpu_time_ms": 4.715025424957275,
+        "avg_parallel_time_ms": 9.51242446899414,
+        "n_samples": 8
+      },
+      "19": {
+        "avg_parallel_degree": 1.040740959218922,
+        "avg_gpu_time_ms": 8.326470851898193,
+        "avg_cpu_time_ms": 8.173078298568726,
+        "avg_parallel_time_ms": 12.623429298400879,
+        "n_samples": 8
+      },
+      "20": {
+        "avg_parallel_degree": 1.0566112848162783,
+        "avg_gpu_time_ms": 8.930593729019165,
+        "avg_cpu_time_ms": 7.303327322006226,
+        "avg_parallel_time_ms": 11.747211217880249,
+        "n_samples": 8
+      },
+      "21": {
+        "avg_parallel_degree": 1.0337717995083076,
+        "avg_gpu_time_ms": 7.856905460357666,
+        "avg_cpu_time_ms": 8.416891098022461,
+        "avg_parallel_time_ms": 12.79643177986145,
+        "n_samples": 8
+      },
+      "22": {
+        "avg_parallel_degree": 1.0638323831634493,
+        "avg_gpu_time_ms": 8.426666259765625,
+        "avg_cpu_time_ms": 6.124913692474365,
+        "avg_parallel_time_ms": 10.546743869781494,
+        "n_samples": 8
+      },
+      "23": {
+        "avg_parallel_degree": 1.0698400599750821,
+        "avg_gpu_time_ms": 8.440345525741577,
+        "avg_cpu_time_ms": 5.503326654434204,
+        "avg_parallel_time_ms": 10.103881359100342,
+        "n_samples": 8
+      },
+      "24": {
+        "avg_parallel_degree": 1.0677936519521996,
+        "avg_gpu_time_ms": 8.79088044166565,
+        "avg_cpu_time_ms": 5.365580320358276,
+        "avg_parallel_time_ms": 10.520756244659424,
+        "n_samples": 8
+      },
+      "25": {
+        "avg_parallel_degree": 1.0443932176280497,
+        "avg_gpu_time_ms": 8.264929056167603,
+        "avg_cpu_time_ms": 6.596952676773071,
+        "avg_parallel_time_ms": 11.667609214782715,
+        "n_samples": 8
+      },
+      "26": {
+        "avg_parallel_degree": 1.0385556361137698,
+        "avg_gpu_time_ms": 8.701890707015991,
+        "avg_cpu_time_ms": 7.865935564041138,
+        "avg_parallel_time_ms": 13.163715600967407,
+        "n_samples": 8
+      }
+    }
+  },
+  {
+    "config": {
+      "batch_size": 4,
+      "prefetch_enabled": false,
+      "e": 0.85,
+      "tg": 0.35,
+      "tc": 2.1444
+    },
+    "hit_rates": {
+      "hot_hit_rate": 0.7041215749481925,
+      "prefetch_hit_rate": 0.0,
+      "gpu_available_rate": 0.7041215749481925,
+      "hot_hit_rate_std": 0.0,
+      "prefetch_hit_rate_std": 0.0,
+      "gpu_available_rate_std": 0.0
+    },
+    "parallelism": {
+      "avg_parallel_degree": 1.4705914953054882,
+      "max_parallel_degree": 1.931813171672637,
+      "min_parallel_degree": 0.9807355516637478,
+      "std_parallel_degree": 0.17135957279849748
+    },
+    "throughput": {
+      "avg": 2.308244850692708,
+      "std": 0.0,
+      "prefill_avg": 6.697460412979126,
+      "decode_avg": 7.165886878967285
+    },
+    "expert_classification": {
+      "gpu": 3058,
+      "cpu": 1005,
+      "ondemand": 280,
+      "prefetch": 0,
+      "loading": 0,
+      "placeholder": 0
+    },
+    "expert_classification_pct": {
+      "gpu": 70.41215749481925,
+      "cpu": 23.14068616163942,
+      "ondemand": 6.447156343541331,
+      "prefetch": 0.0,
+      "loading": 0.0,
+      "placeholder": 0.0
+    },
+    "layer_parallel_stats": {
+      "1": {
+        "avg_parallel_degree": 1.576938684780402,
+        "avg_gpu_time_ms": 23.58633279800415,
+        "avg_cpu_time_ms": 20.635604858398438,
+        "avg_parallel_time_ms": 27.678251266479492,
+        "n_samples": 8
+      },
+      "2": {
+        "avg_parallel_degree": 1.3859739275762197,
+        "avg_gpu_time_ms": 23.219794034957886,
+        "avg_cpu_time_ms": 16.056954860687256,
+        "avg_parallel_time_ms": 24.670124053955078,
+        "n_samples": 8
+      },
+      "3": {
+        "avg_parallel_degree": 1.3581480839724962,
+        "avg_gpu_time_ms": 20.470738410949707,
+        "avg_cpu_time_ms": 14.811575412750244,
+        "avg_parallel_time_ms": 22.985130548477173,
+        "n_samples": 8
+      },
+      "4": {
+        "avg_parallel_degree": 1.604720441331295,
+        "avg_gpu_time_ms": 21.12603187561035,
+        "avg_cpu_time_ms": 23.589342832565308,
+        "avg_parallel_time_ms": 28.424829244613647,
+        "n_samples": 8
+      },
+      "5": {
+        "avg_parallel_degree": 1.4621213984094845,
+        "avg_gpu_time_ms": 19.215792417526245,
+        "avg_cpu_time_ms": 16.917020082473755,
+        "avg_parallel_time_ms": 22.88198471069336,
+        "n_samples": 8
+      },
+      "6": {
+        "avg_parallel_degree": 1.3664189697782745,
+        "avg_gpu_time_ms": 15.807688236236572,
+        "avg_cpu_time_ms": 18.164396286010742,
+        "avg_parallel_time_ms": 23.871809244155884,
+        "n_samples": 8
+      },
+      "7": {
+        "avg_parallel_degree": 1.512121724827126,
+        "avg_gpu_time_ms": 18.434375524520874,
+        "avg_cpu_time_ms": 20.11248469352722,
+        "avg_parallel_time_ms": 25.740355253219604,
+        "n_samples": 8
+      },
+      "8": {
+        "avg_parallel_degree": 1.3962607520018144,
+        "avg_gpu_time_ms": 17.537623643875122,
+        "avg_cpu_time_ms": 14.884233474731445,
+        "avg_parallel_time_ms": 21.47504687309265,
+        "n_samples": 8
+      },
+      "9": {
+        "avg_parallel_degree": 1.2981124002638698,
+        "avg_gpu_time_ms": 15.127301216125488,
+        "avg_cpu_time_ms": 12.103110551834106,
+        "avg_parallel_time_ms": 18.902450799942017,
+        "n_samples": 8
+      },
+      "10": {
+        "avg_parallel_degree": 1.4405452479822247,
+        "avg_gpu_time_ms": 18.31147074699402,
+        "avg_cpu_time_ms": 16.77602529525757,
+        "avg_parallel_time_ms": 23.43735098838806,
+        "n_samples": 8
+      },
+      "11": {
+        "avg_parallel_degree": 1.36535412929199,
+        "avg_gpu_time_ms": 16.99739694595337,
+        "avg_cpu_time_ms": 13.34679126739502,
+        "avg_parallel_time_ms": 20.158976316452026,
+        "n_samples": 8
+      },
+      "12": {
+        "avg_parallel_degree": 1.5768771465957139,
+        "avg_gpu_time_ms": 18.848150968551636,
+        "avg_cpu_time_ms": 18.803447484970093,
+        "avg_parallel_time_ms": 23.55802059173584,
+        "n_samples": 8
+      },
+      "13": {
+        "avg_parallel_degree": 1.5767080912406564,
+        "avg_gpu_time_ms": 19.101113080978394,
+        "avg_cpu_time_ms": 16.74821972846985,
+        "avg_parallel_time_ms": 21.819263696670532,
+        "n_samples": 8
+      },
+      "14": {
+        "avg_parallel_degree": 1.4553705254971452,
+        "avg_gpu_time_ms": 16.847550868988037,
+        "avg_cpu_time_ms": 15.636533498764038,
+        "avg_parallel_time_ms": 21.634668111801147,
+        "n_samples": 8
+      },
+      "15": {
+        "avg_parallel_degree": 1.5280599835862934,
+        "avg_gpu_time_ms": 19.935548305511475,
+        "avg_cpu_time_ms": 16.485542058944702,
+        "avg_parallel_time_ms": 21.884292364120483,
+        "n_samples": 8
+      },
+      "16": {
+        "avg_parallel_degree": 1.454321328710877,
+        "avg_gpu_time_ms": 18.237441778182983,
+        "avg_cpu_time_ms": 17.1603262424469,
+        "avg_parallel_time_ms": 22.954732179641724,
+        "n_samples": 8
+      },
+      "17": {
+        "avg_parallel_degree": 1.6018782498065773,
+        "avg_gpu_time_ms": 21.013349294662476,
+        "avg_cpu_time_ms": 19.100159406661987,
+        "avg_parallel_time_ms": 23.944735527038574,
+        "n_samples": 8
+      },
+      "18": {
+        "avg_parallel_degree": 1.452285912260518,
+        "avg_gpu_time_ms": 19.443601369857788,
+        "avg_cpu_time_ms": 17.414867877960205,
+        "avg_parallel_time_ms": 24.097472429275513,
+        "n_samples": 8
+      },
+      "19": {
+        "avg_parallel_degree": 1.57534333398547,
+        "avg_gpu_time_ms": 22.11669087409973,
+        "avg_cpu_time_ms": 21.891355514526367,
+        "avg_parallel_time_ms": 27.471989393234253,
+        "n_samples": 8
+      },
+      "20": {
+        "avg_parallel_degree": 1.4787143579992401,
+        "avg_gpu_time_ms": 22.170573472976685,
+        "avg_cpu_time_ms": 20.500004291534424,
+        "avg_parallel_time_ms": 26.697009801864624,
+        "n_samples": 8
+      },
+      "21": {
+        "avg_parallel_degree": 1.508083281500071,
+        "avg_gpu_time_ms": 18.63032579421997,
+        "avg_cpu_time_ms": 20.79370617866516,
+        "avg_parallel_time_ms": 26.244014501571655,
+        "n_samples": 8
+      },
+      "22": {
+        "avg_parallel_degree": 1.4126038802296534,
+        "avg_gpu_time_ms": 18.619239330291748,
+        "avg_cpu_time_ms": 15.587866306304932,
+        "avg_parallel_time_ms": 22.75100350379944,
+        "n_samples": 8
+      },
+      "23": {
+        "avg_parallel_degree": 1.3458305648662496,
+        "avg_gpu_time_ms": 18.361806869506836,
+        "avg_cpu_time_ms": 14.267802238464355,
+        "avg_parallel_time_ms": 21.52872085571289,
+        "n_samples": 8
+      },
+      "24": {
+        "avg_parallel_degree": 1.5207099919400333,
+        "avg_gpu_time_ms": 19.995510578155518,
+        "avg_cpu_time_ms": 17.773807048797607,
+        "avg_parallel_time_ms": 23.461997509002686,
+        "n_samples": 8
+      },
+      "25": {
+        "avg_parallel_degree": 1.4821196676338526,
+        "avg_gpu_time_ms": 16.307324171066284,
+        "avg_cpu_time_ms": 18.568992614746094,
+        "avg_parallel_time_ms": 23.907601833343506,
+        "n_samples": 8
+      },
+      "26": {
+        "avg_parallel_degree": 1.4997568018751442,
+        "avg_gpu_time_ms": 17.592251300811768,
+        "avg_cpu_time_ms": 22.468537092208862,
+        "avg_parallel_time_ms": 28.034687042236328,
+        "n_samples": 8
+      }
+    }
+  },
+  {
+    "config": {
+      "batch_size": 4,
+      "prefetch_enabled": true,
+      "e": 0.85,
+      "tg": 0.35,
+      "tc": 2.1444
+    },
+    "hit_rates": {
+      "hot_hit_rate": 0.704325816843074,
+      "prefetch_hit_rate": 0.0016106764841233318,
+      "gpu_available_rate": 0.7059364933271974,
+      "hot_hit_rate_std": 0.0,
+      "prefetch_hit_rate_std": 0.0,
+      "gpu_available_rate_std": 0.0
+    },
+    "parallelism": {
+      "avg_parallel_degree": 1.4738408031381671,
+      "max_parallel_degree": 1.9975288145036005,
+      "min_parallel_degree": 0.9799821191042107,
+      "std_parallel_degree": 0.17270871192489573
+    },
+    "throughput": {
+      "avg": 2.2909294827952245,
+      "std": 0.0,
+      "prefill_avg": 6.568112850189209,
+      "decode_avg": 7.400016784667969
+    },
+    "expert_classification": {
+      "gpu": 3061,
+      "cpu": 1003,
+      "ondemand": 275,
+      "prefetch": 7,
+      "loading": 0,
+      "placeholder": 0
+    },
+    "expert_classification_pct": {
+      "gpu": 70.43258168430741,
+      "cpu": 23.07869305108145,
+      "ondemand": 6.327657616198803,
+      "prefetch": 0.16106764841233318,
+      "loading": 0.0,
+      "placeholder": 0.0
+    },
+    "layer_parallel_stats": {
+      "1": {
+        "avg_parallel_degree": 1.5742978660250857,
+        "avg_gpu_time_ms": 22.199898958206177,
+        "avg_cpu_time_ms": 19.95512843132019,
+        "avg_parallel_time_ms": 26.26219391822815,
+        "n_samples": 8
+      },
+      "2": {
+        "avg_parallel_degree": 1.4091791987689088,
+        "avg_gpu_time_ms": 22.581905126571655,
+        "avg_cpu_time_ms": 16.256511211395264,
+        "avg_parallel_time_ms": 23.979276418685913,
+        "n_samples": 8
+      },
+      "3": {
+        "avg_parallel_degree": 1.3607211271412765,
+        "avg_gpu_time_ms": 20.93648910522461,
+        "avg_cpu_time_ms": 15.303641557693481,
+        "avg_parallel_time_ms": 23.149549961090088,
+        "n_samples": 8
+      },
+      "4": {
+        "avg_parallel_degree": 1.5690398264962078,
+        "avg_gpu_time_ms": 20.332276821136475,
+        "avg_cpu_time_ms": 21.925389766693115,
+        "avg_parallel_time_ms": 27.368992567062378,
+        "n_samples": 8
+      },
+      "5": {
+        "avg_parallel_degree": 1.4303522946116138,
+        "avg_gpu_time_ms": 19.425302743911743,
+        "avg_cpu_time_ms": 17.1070396900177,
+        "avg_parallel_time_ms": 23.384004831314087,
+        "n_samples": 8
+      },
+      "6": {
+        "avg_parallel_degree": 1.432365865232737,
+        "avg_gpu_time_ms": 16.297221183776855,
+        "avg_cpu_time_ms": 19.041448831558228,
+        "avg_parallel_time_ms": 24.06156063079834,
+        "n_samples": 8
+      },
+      "7": {
+        "avg_parallel_degree": 1.478312356821479,
+        "avg_gpu_time_ms": 18.660277128219604,
+        "avg_cpu_time_ms": 19.594788551330566,
+        "avg_parallel_time_ms": 25.890976190567017,
+        "n_samples": 8
+      },
+      "8": {
+        "avg_parallel_degree": 1.4296006876663236,
+        "avg_gpu_time_ms": 16.89225435256958,
+        "avg_cpu_time_ms": 15.508532524108887,
+        "avg_parallel_time_ms": 21.38042449951172,
+        "n_samples": 8
+      },
+      "9": {
+        "avg_parallel_degree": 1.320468280968635,
+        "avg_gpu_time_ms": 16.546964645385742,
+        "avg_cpu_time_ms": 13.452678918838501,
+        "avg_parallel_time_ms": 20.110279321670532,
+        "n_samples": 8
+      },
+      "10": {
+        "avg_parallel_degree": 1.4651560335915472,
+        "avg_gpu_time_ms": 18.55507493019104,
+        "avg_cpu_time_ms": 18.648654222488403,
+        "avg_parallel_time_ms": 24.848580360412598,
+        "n_samples": 8
+      },
+      "11": {
+        "avg_parallel_degree": 1.3770066676297135,
+        "avg_gpu_time_ms": 17.47038960456848,
+        "avg_cpu_time_ms": 13.338267803192139,
+        "avg_parallel_time_ms": 20.336300134658813,
+        "n_samples": 8
+      },
+      "12": {
+        "avg_parallel_degree": 1.5600190080809488,
+        "avg_gpu_time_ms": 18.565326929092407,
+        "avg_cpu_time_ms": 17.967820167541504,
+        "avg_parallel_time_ms": 23.083537817001343,
+        "n_samples": 8
+      },
+      "13": {
+        "avg_parallel_degree": 1.5282047238805174,
+        "avg_gpu_time_ms": 18.130451440811157,
+        "avg_cpu_time_ms": 15.663474798202515,
+        "avg_parallel_time_ms": 21.291911602020264,
+        "n_samples": 8
+      },
+      "14": {
+        "avg_parallel_degree": 1.4708791981354326,
+        "avg_gpu_time_ms": 16.48324728012085,
+        "avg_cpu_time_ms": 16.74884557723999,
+        "avg_parallel_time_ms": 22.28441834449768,
+        "n_samples": 8
+      },
+      "15": {
+        "avg_parallel_degree": 1.5278169031730449,
+        "avg_gpu_time_ms": 18.713295459747314,
+        "avg_cpu_time_ms": 16.660988330841064,
+        "avg_parallel_time_ms": 21.9670832157135,
+        "n_samples": 8
+      },
+      "16": {
+        "avg_parallel_degree": 1.4649262171335342,
+        "avg_gpu_time_ms": 18.964380025863647,
+        "avg_cpu_time_ms": 18.157392740249634,
+        "avg_parallel_time_ms": 23.973166942596436,
+        "n_samples": 8
+      },
+      "17": {
+        "avg_parallel_degree": 1.6036690538282103,
+        "avg_gpu_time_ms": 20.726919174194336,
+        "avg_cpu_time_ms": 18.700212240219116,
+        "avg_parallel_time_ms": 23.515284061431885,
+        "n_samples": 8
+      },
+      "18": {
+        "avg_parallel_degree": 1.4528114417242182,
+        "avg_gpu_time_ms": 20.05741000175476,
+        "avg_cpu_time_ms": 17.20932126045227,
+        "avg_parallel_time_ms": 23.819446563720703,
+        "n_samples": 8
+      },
+      "19": {
+        "avg_parallel_degree": 1.5409820747052683,
+        "avg_gpu_time_ms": 20.24739980697632,
+        "avg_cpu_time_ms": 20.423024892807007,
+        "avg_parallel_time_ms": 26.30487084388733,
+        "n_samples": 8
+      },
+      "20": {
+        "avg_parallel_degree": 1.4738650103911648,
+        "avg_gpu_time_ms": 20.031511783599854,
+        "avg_cpu_time_ms": 18.867313861846924,
+        "avg_parallel_time_ms": 25.062978267669678,
+        "n_samples": 8
+      },
+      "21": {
+        "avg_parallel_degree": 1.552359020209029,
+        "avg_gpu_time_ms": 349.82162714004517,
+        "avg_cpu_time_ms": 351.1412739753723,
+        "avg_parallel_time_ms": 356.8984568119049,
+        "n_samples": 8
+      },
+      "22": {
+        "avg_parallel_degree": 1.4104025331445404,
+        "avg_gpu_time_ms": 20.080387592315674,
+        "avg_cpu_time_ms": 15.748023986816406,
+        "avg_parallel_time_ms": 23.18882942199707,
+        "n_samples": 8
+      },
+      "23": {
+        "avg_parallel_degree": 1.3331247189066813,
+        "avg_gpu_time_ms": 16.75686240196228,
+        "avg_cpu_time_ms": 13.671875,
+        "avg_parallel_time_ms": 20.428955554962158,
+        "n_samples": 8
+      },
+      "24": {
+        "avg_parallel_degree": 1.4949575496185519,
+        "avg_gpu_time_ms": 20.411282777786255,
+        "avg_cpu_time_ms": 17.011433839797974,
+        "avg_parallel_time_ms": 23.07981252670288,
+        "n_samples": 8
+      },
+      "25": {
+        "avg_parallel_degree": 1.49364577214824,
+        "avg_gpu_time_ms": 15.736550092697144,
+        "avg_cpu_time_ms": 18.759489059448242,
+        "avg_parallel_time_ms": 23.826122283935547,
+        "n_samples": 8
+      },
+      "26": {
+        "avg_parallel_degree": 1.565697451559443,
+        "avg_gpu_time_ms": 17.03891158103943,
+        "avg_cpu_time_ms": 23.357272148132324,
+        "avg_parallel_time_ms": 27.979552745819092,
+        "n_samples": 8
+      }
+    }
+  }
+]

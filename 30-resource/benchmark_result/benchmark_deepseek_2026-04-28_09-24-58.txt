@@ -1,0 +1,154 @@
+====================================================================================================
+MoE Benchmark 报告 — 命中率 + 并行度
+时间: 2026-04-28 09:24:58
+模型: /mnt/g/Models/DeepSeek-v2-lite-chat
+input_token=128, output_token=8, n_sample=1
+====================================================================================================
+
+--- batch_size=1, prefetch=禁用 ---
+  热表命中率:   73.12% (std=0.0000)
+  预取命中率:   0.00% (std=0.0000)
+  GPU可用率:    73.12% (std=0.0000)
+  平均并行度:   1.06x (std=0.2374, min=0.94x, max=1.98x)
+  吞吐率:       1.58 token/s (std=0.00)
+  Prefill:      2.75s, Decode: 2.32s
+  专家分类:     GPU=1624(73.1%) CPU=401(18.1%) OD=196(8.8%) PF=0(0.0%)
+
+  逐层并行度:
+    Layer  1: GPU=13.77ms CPU=8.53ms PD=1.09x
+    Layer  2: GPU=11.34ms CPU=6.07ms PD=1.09x
+    Layer  3: GPU=10.25ms CPU=4.87ms PD=1.09x
+    Layer  4: GPU=9.04ms CPU=6.81ms PD=1.07x
+    Layer  5: GPU=9.72ms CPU=6.77ms PD=1.08x
+    Layer  6: GPU=8.36ms CPU=8.70ms PD=1.04x
+    Layer  7: GPU=8.10ms CPU=7.63ms PD=1.04x
+    Layer  8: GPU=7.97ms CPU=5.00ms PD=1.08x
+    Layer  9: GPU=8.22ms CPU=6.41ms PD=1.06x
+    Layer 10: GPU=8.55ms CPU=8.37ms PD=1.04x
+    Layer 11: GPU=8.12ms CPU=5.10ms PD=1.08x
+    Layer 12: GPU=8.11ms CPU=6.68ms PD=1.05x
+    Layer 13: GPU=8.28ms CPU=5.85ms PD=1.06x
+    Layer 14: GPU=8.02ms CPU=6.33ms PD=1.05x
+    Layer 15: GPU=8.58ms CPU=4.59ms PD=1.10x
+    Layer 16: GPU=8.32ms CPU=5.83ms PD=1.07x
+    Layer 17: GPU=8.24ms CPU=4.68ms PD=1.09x
+    Layer 18: GPU=8.69ms CPU=4.79ms PD=1.09x
+    Layer 19: GPU=8.63ms CPU=8.15ms PD=1.05x
+    Layer 20: GPU=8.99ms CPU=7.32ms PD=1.05x
+    Layer 21: GPU=7.91ms CPU=8.30ms PD=1.03x
+    Layer 22: GPU=8.47ms CPU=6.04ms PD=1.07x
+    Layer 23: GPU=8.37ms CPU=5.39ms PD=1.07x
+    Layer 24: GPU=8.82ms CPU=5.75ms PD=1.07x
+    Layer 25: GPU=8.07ms CPU=7.05ms PD=1.04x
+    Layer 26: GPU=8.74ms CPU=7.44ms PD=1.04x
+
+--- batch_size=1, prefetch=启用 ---
+  热表命中率:   73.12% (std=0.0000)
+  预取命中率:   0.59% (std=0.0000)
+  GPU可用率:    73.71% (std=0.0000)
+  平均并行度:   1.06x (std=0.2340, min=0.92x, max=1.96x)
+  吞吐率:       1.04 token/s (std=0.00)
+  Prefill:      5.45s, Decode: 2.28s
+  专家分类:     GPU=1624(73.1%) CPU=401(18.1%) OD=183(8.2%) PF=13(0.6%)
+
+  逐层并行度:
+    Layer  1: GPU=12.80ms CPU=7.53ms PD=1.08x
+    Layer  2: GPU=11.39ms CPU=5.88ms PD=1.08x
+    Layer  3: GPU=9.51ms CPU=4.51ms PD=1.09x
+    Layer  4: GPU=8.91ms CPU=6.65ms PD=1.06x
+    Layer  5: GPU=8.73ms CPU=6.55ms PD=1.07x
+    Layer  6: GPU=8.18ms CPU=8.23ms PD=1.04x
+    Layer  7: GPU=8.78ms CPU=7.58ms PD=1.05x
+    Layer  8: GPU=7.85ms CPU=4.38ms PD=1.08x
+    Layer  9: GPU=7.54ms CPU=5.68ms PD=1.05x
+    Layer 10: GPU=8.44ms CPU=7.87ms PD=1.04x
+    Layer 11: GPU=7.98ms CPU=5.00ms PD=1.08x
+    Layer 12: GPU=7.78ms CPU=6.18ms PD=1.05x
+    Layer 13: GPU=7.95ms CPU=5.32ms PD=1.06x
+    Layer 14: GPU=8.09ms CPU=372.70ms PD=0.98x
+    Layer 15: GPU=8.97ms CPU=4.95ms PD=1.10x
+    Layer 16: GPU=8.35ms CPU=6.05ms PD=1.06x
+    Layer 17: GPU=8.86ms CPU=4.59ms PD=1.10x
+    Layer 18: GPU=8.74ms CPU=4.72ms PD=1.09x
+    Layer 19: GPU=8.33ms CPU=8.17ms PD=1.04x
+    Layer 20: GPU=8.93ms CPU=7.30ms PD=1.06x
+    Layer 21: GPU=7.86ms CPU=8.42ms PD=1.03x
+    Layer 22: GPU=8.43ms CPU=6.12ms PD=1.06x
+    Layer 23: GPU=8.44ms CPU=5.50ms PD=1.07x
+    Layer 24: GPU=8.79ms CPU=5.37ms PD=1.07x
+    Layer 25: GPU=8.26ms CPU=6.60ms PD=1.04x
+    Layer 26: GPU=8.70ms CPU=7.87ms PD=1.04x
+
+--- batch_size=4, prefetch=禁用 ---
+  热表命中率:   70.41% (std=0.0000)
+  预取命中率:   0.00% (std=0.0000)
+  GPU可用率:    70.41% (std=0.0000)
+  平均并行度:   1.47x (std=0.1714, min=0.98x, max=1.93x)
+  吞吐率:       2.31 token/s (std=0.00)
+  Prefill:      6.70s, Decode: 7.17s
+  专家分类:     GPU=3058(70.4%) CPU=1005(23.1%) OD=280(6.4%) PF=0(0.0%)
+
+  逐层并行度:
+    Layer  1: GPU=23.59ms CPU=20.64ms PD=1.58x
+    Layer  2: GPU=23.22ms CPU=16.06ms PD=1.39x
+    Layer  3: GPU=20.47ms CPU=14.81ms PD=1.36x
+    Layer  4: GPU=21.13ms CPU=23.59ms PD=1.60x
+    Layer  5: GPU=19.22ms CPU=16.92ms PD=1.46x
+    Layer  6: GPU=15.81ms CPU=18.16ms PD=1.37x
+    Layer  7: GPU=18.43ms CPU=20.11ms PD=1.51x
+    Layer  8: GPU=17.54ms CPU=14.88ms PD=1.40x
+    Layer  9: GPU=15.13ms CPU=12.10ms PD=1.30x
+    Layer 10: GPU=18.31ms CPU=16.78ms PD=1.44x
+    Layer 11: GPU=17.00ms CPU=13.35ms PD=1.37x
+    Layer 12: GPU=18.85ms CPU=18.80ms PD=1.58x
+    Layer 13: GPU=19.10ms CPU=16.75ms PD=1.58x
+    Layer 14: GPU=16.85ms CPU=15.64ms PD=1.46x
+    Layer 15: GPU=19.94ms CPU=16.49ms PD=1.53x
+    Layer 16: GPU=18.24ms CPU=17.16ms PD=1.45x
+    Layer 17: GPU=21.01ms CPU=19.10ms PD=1.60x
+    Layer 18: GPU=19.44ms CPU=17.41ms PD=1.45x
+    Layer 19: GPU=22.12ms CPU=21.89ms PD=1.58x
+    Layer 20: GPU=22.17ms CPU=20.50ms PD=1.48x
+    Layer 21: GPU=18.63ms CPU=20.79ms PD=1.51x
+    Layer 22: GPU=18.62ms CPU=15.59ms PD=1.41x
+    Layer 23: GPU=18.36ms CPU=14.27ms PD=1.35x
+    Layer 24: GPU=20.00ms CPU=17.77ms PD=1.52x
+    Layer 25: GPU=16.31ms CPU=18.57ms PD=1.48x
+    Layer 26: GPU=17.59ms CPU=22.47ms PD=1.50x
+
+--- batch_size=4, prefetch=启用 ---
+  热表命中率:   70.43% (std=0.0000)
+  预取命中率:   0.16% (std=0.0000)
+  GPU可用率:    70.59% (std=0.0000)
+  平均并行度:   1.47x (std=0.1727, min=0.98x, max=2.00x)
+  吞吐率:       2.29 token/s (std=0.00)
+  Prefill:      6.57s, Decode: 7.40s
+  专家分类:     GPU=3061(70.4%) CPU=1003(23.1%) OD=275(6.3%) PF=7(0.2%)
+
+  逐层并行度:
+    Layer  1: GPU=22.20ms CPU=19.96ms PD=1.57x
+    Layer  2: GPU=22.58ms CPU=16.26ms PD=1.41x
+    Layer  3: GPU=20.94ms CPU=15.30ms PD=1.36x
+    Layer  4: GPU=20.33ms CPU=21.93ms PD=1.57x
+    Layer  5: GPU=19.43ms CPU=17.11ms PD=1.43x
+    Layer  6: GPU=16.30ms CPU=19.04ms PD=1.43x
+    Layer  7: GPU=18.66ms CPU=19.59ms PD=1.48x
+    Layer  8: GPU=16.89ms CPU=15.51ms PD=1.43x
+    Layer  9: GPU=16.55ms CPU=13.45ms PD=1.32x
+    Layer 10: GPU=18.56ms CPU=18.65ms PD=1.47x
+    Layer 11: GPU=17.47ms CPU=13.34ms PD=1.38x
+    Layer 12: GPU=18.57ms CPU=17.97ms PD=1.56x
+    Layer 13: GPU=18.13ms CPU=15.66ms PD=1.53x
+    Layer 14: GPU=16.48ms CPU=16.75ms PD=1.47x
+    Layer 15: GPU=18.71ms CPU=16.66ms PD=1.53x
+    Layer 16: GPU=18.96ms CPU=18.16ms PD=1.46x
+    Layer 17: GPU=20.73ms CPU=18.70ms PD=1.60x
+    Layer 18: GPU=20.06ms CPU=17.21ms PD=1.45x
+    Layer 19: GPU=20.25ms CPU=20.42ms PD=1.54x
+    Layer 20: GPU=20.03ms CPU=18.87ms PD=1.47x
+    Layer 21: GPU=349.82ms CPU=351.14ms PD=1.55x
+    Layer 22: GPU=20.08ms CPU=15.75ms PD=1.41x
+    Layer 23: GPU=16.76ms CPU=13.67ms PD=1.33x
+    Layer 24: GPU=20.41ms CPU=17.01ms PD=1.49x
+    Layer 25: GPU=15.74ms CPU=18.76ms PD=1.49x
+    Layer 26: GPU=17.04ms CPU=23.36ms PD=1.57x

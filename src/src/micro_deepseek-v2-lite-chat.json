@@ -1,0 +1,134 @@
+{
+  "model_name": "deepseek-v2-lite-chat",
+  "timestamp": "2026-05-17T13:03:10.297294",
+  "expert_cpu": [
+    {
+      "token_count": 1,
+      "avg_time_ms": 0.142
+    },
+    {
+      "token_count": 2,
+      "avg_time_ms": 0.3221
+    },
+    {
+      "token_count": 4,
+      "avg_time_ms": 0.4089
+    },
+    {
+      "token_count": 8,
+      "avg_time_ms": 0.7535
+    },
+    {
+      "token_count": 16,
+      "avg_time_ms": 1.5126
+    },
+    {
+      "token_count": 32,
+      "avg_time_ms": 2.8858
+    },
+    {
+      "token_count": 64,
+      "avg_time_ms": 5.7526
+    },
+    {
+      "token_count": 128,
+      "avg_time_ms": 11.5826
+    }
+  ],
+  "expert_gpu": [
+    {
+      "token_count": 1,
+      "avg_time_ms": 0.0928
+    },
+    {
+      "token_count": 2,
+      "avg_time_ms": 0.095
+    },
+    {
+      "token_count": 4,
+      "avg_time_ms": 0.0936
+    },
+    {
+      "token_count": 8,
+      "avg_time_ms": 0.0918
+    },
+    {
+      "token_count": 16,
+      "avg_time_ms": 0.0928
+    },
+    {
+      "token_count": 32,
+      "avg_time_ms": 0.1026
+    },
+    {
+      "token_count": 64,
+      "avg_time_ms": 0.1074
+    },
+    {
+      "token_count": 128,
+      "avg_time_ms": 0.1175
+    }
+  ],
+  "expert_weight_copy": {
+    "trials_ms": [
+      1.8256,
+      1.0107,
+      3.408,
+      1.1055,
+      0.9942
+    ],
+    "avg_ms": 1.6688
+  },
+  "attention_prefill": [
+    {
+      "token_count": 1,
+      "avg_time_ms": 0.9661
+    },
+    {
+      "token_count": 8,
+      "avg_time_ms": 1.156
+    },
+    {
+      "token_count": 32,
+      "avg_time_ms": 0.9266
+    },
+    {
+      "token_count": 64,
+      "avg_time_ms": 0.5041
+    },
+    {
+      "token_count": 128,
+      "avg_time_ms": 0.548
+    },
+    {
+      "token_count": 256,
+      "avg_time_ms": 0.6479
+    }
+  ],
+  "attention_decode": [
+    {
+      "past_length": 1,
+      "avg_time_ms": 0.5446
+    },
+    {
+      "past_length": 8,
+      "avg_time_ms": 0.4589
+    },
+    {
+      "past_length": 32,
+      "avg_time_ms": 0.7574
+    },
+    {
+      "past_length": 64,
+      "avg_time_ms": 0.7007
+    },
+    {
+      "past_length": 128,
+      "avg_time_ms": 0.553
+    },
+    {
+      "past_length": 256,
+      "avg_time_ms": 0.7353
+    }
+  ]
+}
