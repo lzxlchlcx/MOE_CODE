@@ -24,6 +24,9 @@ from expert_scheduling import (
 from placeholder_manager import ExpertPlaceholderManager
 from eviction_strategy import LRUEvictionStrategy
 from expert_predictor import ExpertPredictor, GatePredictor
+from expert_executor import ExpertExecutionManager
+from expert_latency import ExpertLatencyModel
+from expert_types import ExpertDemand, ExpertKey, ExpertLayerContext, ExpertSchedule, build_assignments
 
 class FiddlerDeepSeek:
 
@@ -108,8 +111,12 @@ class FiddlerDeepSeek:
         self.gpu_only_strategy = GPUOnlyStrategy(self.dev, self.is_expert_in_gpu)
 
         self.expert_predictor = GatePredictor()
-        self.predicted_next_experts = None
-        self.predicted_next_weights = None
+        self.predicted_next_demands = []
+        self.latency_model = ExpertLatencyModel(
+            t_io=self.latencu_copy,
+            latency_cpu_table=self.latency_cpu_table,
+            latency_gpu_table=self.latency_gpu_table,
+        )
 
         load_model_tick = time.time()
         self.bring_non_expert_to_gpu()
@@ -125,6 +132,12 @@ class FiddlerDeepSeek:
 
         load_model_tick = time.time()
         self.bring_expert_to_gpu()
+        self.expert_executor = ExpertExecutionManager(
+            device=self.dev,
+            placeholder_manager=self.placeholder_manager,
+            model=self.model,
+            is_expert_in_gpu=self.is_expert_in_gpu,
+        )
         print("experts loaded to GPU, time:", time.time() - load_model_tick)
         print("Model is ready.")
 
@@ -185,9 +198,12 @@ class FiddlerDeepSeek:
             for j in range(self.n_expert):
                 if self.is_expert_in_gpu(i, j):
                     self.model.layers[i].mlp.experts[j].to(self.dev)
+                    self.placeholder_manager.mark_static_gpu_resident(i, j)
+                else:
+                    self.placeholder_manager.mark_cpu_resident(i, j)
 
     def is_expert_in_gpu(self, i_layer, i_expert):
-        return self.expert_loc[i_layer, i_expert] == 1
+        return self.expert_loc[i_layer, i_expert] == 1 or self.placeholder_manager.is_on_gpu(i_layer, i_expert)
 
     def calc_n_expert_on_gpu(self):
         fine_expert = self.model.layers[1].mlp.experts[0]
@@ -461,20 +477,15 @@ class FiddlerDeepSeek:
             if i_layer + 1 < self.n_layer:
                 with ThreadPoolExecutor(max_workers=1) as pred_executor:
                     predict_future = pred_executor.submit(
-                        self.expert_predictor.predict, inps, self.model, i_layer + 1
+                        self.expert_predictor.predict, inps, self.model, i_layer, 1
                     )
 
             # 收集预测结果（在专家执行完成后应已就绪）
             if predict_future is not None:
                 pred_result = predict_future.result()
-                if pred_result is not None:
-                    self.predicted_next_experts, self.predicted_next_weights = pred_result
-                else:
-                    self.predicted_next_experts = None
-                    self.predicted_next_weights = None
+                self.predicted_next_demands = pred_result or []
             else:
-                self.predicted_next_experts = None
-                self.predicted_next_weights = None
+                self.predicted_next_demands = []
 
             shared_output = layer.mlp.shared_experts(inps)
 
@@ -491,8 +502,8 @@ class FiddlerDeepSeek:
             # 策略决策和预处理（PrefetchHybridStrategy 返回 4-tuple）
             result_tuple = strategy.decide_and_prepare(
                 i_layer, experts, selected_experts, routing_weights, self.n_expert,
-                predicted_next_experts=self.predicted_next_experts,
-                predicted_next_weights=self.predicted_next_weights,
+                future_demands=self.predicted_next_demands,
+                placement=self.placeholder_manager.snapshot(),
                 is_prefill=is_prefill,
             )
             if len(result_tuple) == 4:
@@ -507,33 +518,19 @@ class FiddlerDeepSeek:
                 self.cnt_expert_hit = self.hybrid_strategy.cnt_expert_hit
                 self.cnt_expert_all = self.hybrid_strategy.cnt_expert_all
 
-            # 并行执行 GPU、CPU 专家和预取
-            gpu_result = None
-            cpu_result = None
-
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {}
-                if gpu_experts:
-                    futures[executor.submit(self._execute_gpu_experts, i_layer, experts, gpu_experts, expert_assignments, inps_flat, hidden_dim)] = "gpu"
-                if cpu_experts:
-                    futures[executor.submit(self._execute_cpu_experts, i_layer, experts, cpu_experts, expert_assignments, inps_flat, hidden_dim)] = "cpu"
-                if prefetch_experts and not force_gpu:
-                    futures[executor.submit(self._prefetch_next_layer_experts, i_layer, prefetch_experts)] = "prefetch"
-
-                results = {}
-                for f in list(futures.keys()):
-                    results[futures[f]] = f.result()
-
-                gpu_result = results.get("gpu")
-                cpu_result = results.get("cpu")
-
-
-            
-            # 合并结果到 inps_after_experts
-            if gpu_result is not None:
-                inps_after_experts += gpu_result
-            if cpu_result is not None:
-                inps_after_experts += cpu_result.to(self.dev, non_blocking=True)
+            schedule = ExpertSchedule(
+                cpu=[ExpertDemand(ExpertKey(i_layer, eid), expert_assignments[eid][0].shape[0]) for eid in cpu_experts],
+                gpu=[ExpertDemand(ExpertKey(i_layer, eid), expert_assignments[eid][0].shape[0]) for eid in gpu_experts],
+                preload=[ExpertDemand(ExpertKey(i_layer + 1, eid), 1, source="predicted") for eid in prefetch_experts],
+            )
+            context = ExpertLayerContext(
+                layer=i_layer,
+                experts=experts,
+                inps_flat=inps_flat,
+                hidden_dim=hidden_dim,
+                assignments=build_assignments(expert_assignments),
+            )
+            inps_after_experts = self.expert_executor.execute(schedule, context)
             
             total_expert_output = shared_output.view(-1, hidden_dim) + inps_after_experts
             inps = inps_residual + total_expert_output.reshape(batch_size, seq_len, hidden_dim)

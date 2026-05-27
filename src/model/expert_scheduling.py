@@ -1,9 +1,23 @@
+from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional
 import math
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from expert_latency import ExpertLatencyModel
+from expert_types import (
+    ExpertDemand,
+    ExpertKey,
+    ExpertLayerRequest,
+    ExpertSchedule,
+    PlacementSnapshot,
+    build_assignments,
+    build_current_demands,
+    build_future_demands,
+    unique_demands,
+)
 
 
 def _build_expert_mask(selected_experts: torch.Tensor, n_expert: int) -> torch.Tensor:
@@ -75,6 +89,7 @@ class ExpertSchedulingStrategy:
         selected_experts: torch.Tensor,
         routing_weights: torch.Tensor,
         n_expert: int,
+        **kwargs,
     ) -> Tuple[List[int], List[int], Dict[int, Tuple[torch.Tensor, torch.Tensor]]]:
         """策略决策与预处理接口
         
@@ -102,6 +117,7 @@ class GPUOnlyStrategy(ExpertSchedulingStrategy):
         selected_experts: torch.Tensor,
         routing_weights: torch.Tensor,
         n_expert: int,
+        **kwargs,
     ) -> Tuple[List[int], List[int], Dict[int, Tuple[torch.Tensor, torch.Tensor]]]:
         """决策：所有活跃专家都在 GPU 上执行"""
         expert_mask = _build_expert_mask(selected_experts, n_expert)
@@ -195,6 +211,179 @@ def _lookup_latency(table: Dict[int, float], token_count: int) -> float:
     return table[closest]
 
 
+class ExpertScheduler(ABC):
+    """阶段感知专家调度器接口，只生成调度计划，不执行专家计算。"""
+
+    @abstractmethod
+    def schedule(
+        self,
+        request: ExpertLayerRequest,
+        placement: PlacementSnapshot,
+        latency: ExpertLatencyModel,
+    ) -> ExpertSchedule:
+        raise NotImplementedError
+
+
+class PDScopeScheduler(ExpertScheduler):
+    def __init__(self, alpha: float = 0.1, t_attn: float = 0.6, r_hit: float = 0.8):
+        self.alpha = alpha
+        self.t_attn = t_attn
+        self.r_hit = r_hit
+
+    def schedule(
+        self,
+        request: ExpertLayerRequest,
+        placement: PlacementSnapshot,
+        latency: ExpertLatencyModel,
+    ) -> ExpertSchedule:
+        if request.phase == "prefill":
+            return self.schedule_prefill(request, placement, latency)
+        return self.schedule_decode(request, placement, latency)
+
+    def schedule_prefill(
+        self,
+        request: ExpertLayerRequest,
+        placement: PlacementSnapshot,
+        latency: ExpertLatencyModel,
+    ) -> ExpertSchedule:
+        current = request.current
+        current_resident = [d for d in current if placement.is_on_gpu(d.key.layer, d.key.expert_id)]
+        current_non_resident = [d for d in current if not placement.is_on_gpu(d.key.layer, d.key.expert_id)]
+        future_non_resident = [
+            d for d in request.future
+            if not placement.is_on_gpu(d.key.layer, d.key.expert_id)
+            and (d.key.layer, d.key.expert_id) not in placement.loading
+        ]
+
+        combined = current_non_resident + future_non_resident
+        combined.sort(key=lambda d: (d.token_count, d.score))
+
+        global_queue = self._select_global_queue(combined, latency)
+        current_global = [d for d in global_queue if d.source == "current"]
+        ondemand, t_gpu, t_cpu = self._select_current_ondemand(current_global, latency)
+
+        gpu_keys = {(d.key.layer, d.key.expert_id) for d in current_resident + ondemand}
+        gpu = [d for d in current if (d.key.layer, d.key.expert_id) in gpu_keys]
+        cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
+        preload = self._select_preload(global_queue, t_gpu, t_cpu, placement, latency)
+
+        return ExpertSchedule(cpu=cpu, gpu=gpu, preload=preload, evict=[], reason="prefill")
+
+    def schedule_decode(
+        self,
+        request: ExpertLayerRequest,
+        placement: PlacementSnapshot,
+        latency: ExpertLatencyModel,
+    ) -> ExpertSchedule:
+        current = request.current
+        if not current:
+            return ExpertSchedule(reason="decode-empty")
+
+        k = len(current)
+        t_c = latency.cpu(1)
+        t_g = latency.gpu_compute(1)
+        n_g_rho = min(
+            range(k + 1),
+            key=lambda n_g: max(n_g * t_g, (k - n_g) * t_c),
+        )
+
+        current_resident = [d for d in current if placement.is_on_gpu(d.key.layer, d.key.expert_id)]
+        current_non_resident = [d for d in current if not placement.is_on_gpu(d.key.layer, d.key.expert_id)]
+        future_non_resident = [
+            d for d in sorted(request.future, key=lambda x: (x.score, x.token_count), reverse=True)
+            if not placement.is_on_gpu(d.key.layer, d.key.expert_id)
+            and (d.key.layer, d.key.expert_id) not in placement.loading
+        ]
+        next_resident_count = sum(
+            1 for d in request.future
+            if placement.is_on_gpu(d.key.layer, d.key.expert_id)
+        )
+
+        cur_below = len(current_resident) < n_g_rho
+        next_below = next_resident_count < n_g_rho
+
+        if cur_below and next_below:
+            schedule = self.schedule_prefill(request, placement, latency)
+            schedule.reason = "decode-fallback-prefill"
+            return schedule
+        if cur_below and not next_below:
+            need = min(n_g_rho - len(current_resident), len(current_non_resident))
+            ondemand = current_non_resident[:need]
+            gpu_keys = {(d.key.layer, d.key.expert_id) for d in current_resident + ondemand}
+            gpu = [d for d in current if (d.key.layer, d.key.expert_id) in gpu_keys]
+            cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
+            return ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-a")
+        if not cur_below and next_below:
+            need_next = max(0, min(n_g_rho - next_resident_count, placement.free_placeholders))
+            preload = future_non_resident[:need_next]
+            gpu = current_resident
+            gpu_keys = {(d.key.layer, d.key.expert_id) for d in gpu}
+            cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
+            return ExpertSchedule(cpu=cpu, gpu=gpu, preload=preload, evict=[], reason="decode-mode-b")
+
+        gpu = current_resident
+        gpu_keys = {(d.key.layer, d.key.expert_id) for d in gpu}
+        cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
+        return ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-c")
+
+    def _select_global_queue(
+        self,
+        demands: List[ExpertDemand],
+        latency: ExpertLatencyModel,
+    ) -> List[ExpertDemand]:
+        if not demands:
+            return []
+        for i in range(len(demands)):
+            gpu_side = demands[i:]
+            cpu_side = demands[:i]
+            t_gpu = self.alpha + len(gpu_side) * latency.t_io + latency.gpu_compute(1)
+            t_cpu = sum(latency.cpu(d.token_count) for d in cpu_side) + self.t_attn
+            if t_gpu < t_cpu:
+                return gpu_side
+        return []
+
+    def _select_current_ondemand(
+        self,
+        current_global: List[ExpertDemand],
+        latency: ExpertLatencyModel,
+    ) -> Tuple[List[ExpertDemand], float, float]:
+        if not current_global:
+            return [], 0.0, 0.0
+        last_t_gpu = 0.0
+        last_t_cpu = sum(latency.cpu(d.token_count) for d in current_global)
+        for i in range(len(current_global) + 1):
+            gpu_side = current_global[i:]
+            cpu_side = current_global[:i]
+            t_compute = sum(latency.gpu_compute(d.token_count) for d in gpu_side)
+            t_io = len(gpu_side) * latency.t_io
+            t_gpu = max(t_compute, self.alpha + t_io) + latency.gpu_compute(1) if gpu_side else 0.0
+            t_cpu = sum(latency.cpu(d.token_count) for d in cpu_side)
+            last_t_gpu = t_gpu
+            last_t_cpu = t_cpu
+            if gpu_side and t_gpu < t_cpu:
+                return gpu_side, t_gpu, t_cpu
+        return [], last_t_gpu, last_t_cpu
+
+    def _select_preload(
+        self,
+        global_queue: List[ExpertDemand],
+        t_gpu: float,
+        t_cpu: float,
+        placement: PlacementSnapshot,
+        latency: ExpertLatencyModel,
+    ) -> List[ExpertDemand]:
+        t_gap = max(0.0, t_cpu - t_gpu)
+        capacity = min(placement.free_placeholders, math.floor((t_gap + self.t_attn) / max(latency.t_io, 1e-9)))
+        if capacity <= 0:
+            return []
+        xi = (2 * self.r_hit - 1) * latency.t_io
+        if xi <= 0:
+            return []
+        future = [d for d in global_queue if d.source == "predicted"]
+        future.sort(key=lambda d: (d.score, d.token_count), reverse=True)
+        return future[:capacity]
+
+
 class PrefetchHybridStrategy(ExpertSchedulingStrategy):
     """PDScope AdaptSched 调度策略：区分 Prefill 三步调度法和 Decode ABC 策略"""
 
@@ -207,6 +396,8 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
         self.latency_gpu_table = latency_gpu_table
         self.cnt_expert_hit = 0
         self.cnt_expert_all = 0
+        self.latency_model = ExpertLatencyModel(t_io, latency_cpu_table, latency_gpu_table)
+        self.scheduler = PDScopeScheduler()
 
     def decide_and_prepare(
         self,
@@ -218,60 +409,38 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
         predicted_next_experts: Optional[torch.Tensor] = None,
         predicted_next_weights: Optional[torch.Tensor] = None,
         is_prefill: bool = True,
+        future_demands: Optional[List[ExpertDemand]] = None,
+        placement: Optional[PlacementSnapshot] = None,
     ) -> Tuple[List[int], List[int], List[int], Dict[int, Tuple[torch.Tensor, torch.Tensor]]]:
         expert_mask = _build_expert_mask(selected_experts, n_expert)
-        active_experts, idxs, top_2s = _collect_active_experts(expert_mask, n_expert)
-        expert_assignments = _organize_token_assignments(expert_mask, routing_weights, active_experts)
+        active_experts, _, token_indices_by_expert = _collect_active_experts(expert_mask, n_expert)
+        raw_assignments = _organize_token_assignments(expert_mask, routing_weights, active_experts)
+        current_demands = build_current_demands(i_layer, active_experts, token_indices_by_expert)
+        future = future_demands
+        if future is None:
+            future = build_future_demands(i_layer + 1, predicted_next_experts, predicted_next_weights)
+        future = unique_demands(future)
+        if placement is None:
+            gpu_resident = set()
+            for demand in current_demands + future:
+                if self.is_expert_in_gpu(demand.key.layer, demand.key.expert_id):
+                    gpu_resident.add((demand.key.layer, demand.key.expert_id))
+            placement = PlacementSnapshot(gpu_resident=gpu_resident)
 
-        n_active = len(active_experts)
-        cost_cpu = np.zeros(n_active, dtype=float)
-        cost_gpu = np.zeros(n_active, dtype=float)
-        token_counts = {}
-        for bit, i_expert in enumerate(active_experts):
-            tc = top_2s[i_expert].shape[0]
-            token_counts[i_expert] = tc
-            cost_cpu[bit] = tc * _lookup_latency(self.latency_cpu_table, tc)
-            cost_gpu[bit] = _lookup_latency(self.latency_gpu_table, tc)
-            if self.is_expert_in_gpu(i_layer, i_expert):
-                cost_gpu[bit] = 0
-                self.cnt_expert_hit += tc
-            self.cnt_expert_all += tc
+        for demand in current_demands:
+            if placement.is_on_gpu(demand.key.layer, demand.key.expert_id):
+                self.cnt_expert_hit += demand.token_count
+            self.cnt_expert_all += demand.token_count
 
-        best_config = -1
-        best_cost = float("inf")
-        for config in range(1 << n_active):
-            sum_cost = 0
-            for bit in range(n_active):
-                if (config >> bit) & 1:
-                    sum_cost += cost_cpu[bit]
-                else:
-                    sum_cost += cost_gpu[bit]
-            if sum_cost < best_cost:
-                best_cost = sum_cost
-                best_config = config
-
-        cpu_experts = []
-        gpu_experts = []
-        for bit, i_expert in enumerate(active_experts):
-            if (best_config >> bit) & 1:
-                cpu_experts.append(i_expert)
-            else:
-                gpu_experts.append(i_expert)
-
-        prefetch_experts = []
-        if predicted_next_experts is not None and i_layer + 1 < 100:
-            if is_prefill:
-                prefetch_experts = self._prefill_schedule(
-                    i_layer, cpu_experts, gpu_experts, token_counts,
-                    predicted_next_experts, predicted_next_weights,
-                )
-            else:
-                prefetch_experts = self._decode_schedule(
-                    i_layer, cpu_experts, gpu_experts, token_counts,
-                    predicted_next_experts, predicted_next_weights,
-                )
-
-        return cpu_experts, gpu_experts, prefetch_experts, expert_assignments
+        request = ExpertLayerRequest(
+            layer=i_layer,
+            phase="prefill" if is_prefill else "decode",
+            current=current_demands,
+            future=future,
+            assignments=build_assignments(raw_assignments),
+        )
+        schedule = self.scheduler.schedule(request, placement, self.latency_model)
+        return schedule.cpu_expert_ids, schedule.gpu_expert_ids, schedule.preload_expert_ids, raw_assignments
 
     def _prefill_schedule(
         self, i_layer, cpu_experts, gpu_experts, token_counts,
