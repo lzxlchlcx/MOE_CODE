@@ -22,11 +22,11 @@ from expert_types import (
 
 def _build_expert_mask(selected_experts: torch.Tensor, n_expert: int) -> torch.Tensor:
     """构建专家掩码张量，将 selected_experts 转换为 one-hot 编码并调整维度顺序
-    
+
     Args:
         selected_experts: 形状 [batch_size, seq_len, 2]，每个 token 选择的 top-2 专家索引
         n_expert: 总专家数
-    
+
     Returns:
         形状 [n_expert, 2, batch_size*seq_len] 的 one-hot 掩码张量
     """
@@ -126,8 +126,14 @@ class GPUOnlyStrategy(ExpertSchedulingStrategy):
         return [], active_experts, expert_assignments
 
 
-class HybridCPUGPUStrategy(ExpertSchedulingStrategy):
-    """CPU-GPU 混合调度策略：通过代价优化决定每个专家在 CPU 还是 GPU 上执行"""
+class FiddlerStrategy(ExpertSchedulingStrategy):
+    """CPU-GPU 混合调度策略：通过代价优化决定每个专家在 CPU 还是 GPU 上执行
+    
+    职责：
+    - 构建每个活跃专家的 CPU/GPU 执行代价表
+    - 穷举 2^n_active 种配置找到最小代价的分配方案
+    - 统计 GPU 缓存命中率
+    """
     def __init__(self, dev, is_expert_in_gpu, latency_cpu, latency_gpu):
         super().__init__(dev, is_expert_in_gpu)
         self.latency_cpu = latency_cpu  # CPU 上每个 token 的延迟
@@ -145,9 +151,17 @@ class HybridCPUGPUStrategy(ExpertSchedulingStrategy):
     ) -> Tuple[List[int], List[int], Dict[int, Tuple[torch.Tensor, torch.Tensor]]]:
         """决策：通过穷举 2^n_active 种配置找到代价最小的 CPU/GPU 分配方案
         
-        代价计算：
-        - CPU 代价：token_count * latency_cpu
-        - GPU 代价：如果专家已在 GPU 上则为 0，否则为 latency_gpu
+        Args:
+            i_layer: 当前层索引
+            experts: 专家模块列表
+            selected_experts: 每个 token 选择的 top-2 专家
+            routing_weights: 每个 token 对所选专家的路由权重
+            n_expert: 总专家数
+        
+        Returns:
+            cpu_experts: 在 CPU 上执行的专家索引列表
+            gpu_experts: 在 GPU 上执行的专家索引列表
+            expert_assignments: 每个专家的 token 分配信息
         """
         expert_mask = _build_expert_mask(selected_experts, n_expert)
         active_experts, idxs, top_2s = _collect_active_experts(expert_mask, n_expert)
@@ -192,7 +206,14 @@ class HybridCPUGPUStrategy(ExpertSchedulingStrategy):
 
 
 def _build_latency_lookup(entries: list) -> Dict[int, float]:
-    """从 benchmark JSON 数组构建 {token_count: avg_time_ms} 查找表"""
+    """从 benchmark JSON 数组构建 {token_count: avg_time_ms} 查找表
+
+    Args:
+        entries: benchmark 数据列表，每项包含 token_count 和 avg_time_ms
+
+    Returns:
+        {token_count: avg_time_ms} 字典
+    """
     table = {}
     for entry in entries:
         tc = entry["token_count"]
@@ -201,7 +222,20 @@ def _build_latency_lookup(entries: list) -> Dict[int, float]:
 
 
 def _lookup_latency(table: Dict[int, float], token_count: int) -> float:
-    """从查找表获取延迟值，超出范围使用最大 token_count 的条目"""
+    """从查找表获取延迟值
+
+    查找策略：
+    - 精确匹配：直接返回
+    - 超出最大值：使用最大 token_count 的条目
+    - 其他：使用最接近的 token_count 条目
+
+    Args:
+        table: {token_count: avg_time_ms} 查找表
+        token_count: 要查询的 token 数量
+
+    Returns:
+        对应的延迟值（毫秒）
+    """
     if token_count in table:
         return table[token_count]
     max_tc = max(table.keys())
@@ -212,7 +246,14 @@ def _lookup_latency(table: Dict[int, float], token_count: int) -> float:
 
 
 class ExpertScheduler(ABC):
-    """阶段感知专家调度器接口，只生成调度计划，不执行专家计算。"""
+    """阶段感知专家调度器抽象接口
+
+    职责：
+    - 接收结构化的调度请求（ExpertLayerRequest）和驻留快照（PlacementSnapshot）
+    - 结合延迟模型做出调度决策
+    - 输出 ExpertSchedule，包含 CPU/GPU/preload/evict 四类专家列表
+    - 只负责"决定"，不负责"执行"
+    """
 
     @abstractmethod
     def schedule(
@@ -221,10 +262,25 @@ class ExpertScheduler(ABC):
         placement: PlacementSnapshot,
         latency: ExpertLatencyModel,
     ) -> ExpertSchedule:
+        """根据请求、驻留状态和延迟模型生成调度计划"""
         raise NotImplementedError
 
 
 class PDScopeScheduler(ExpertScheduler):
+    """PDScope 论文风格的阶段感知调度器
+
+    职责：
+    - 区分 prefill 和 decode 阶段，分别执行不同的调度策略
+    - prefill：三步调度法（全局队列 → 当前按需 → 预加载）
+    - decode：ABCD 模式决策（当前/下一层驻留是否充足）
+    - 结合 I/O 气泡窗口和命中率决定预加载数量
+
+    参数：
+    - alpha: GPU 启动开销（秒）
+    - t_attn: 注意力计算时间窗口，用于计算预加载可用时间
+    - r_hit: 预期的 placeholder 命中率
+    """
+
     def __init__(self, alpha: float = 0.1, t_attn: float = 0.6, r_hit: float = 0.8):
         self.alpha = alpha
         self.t_attn = t_attn
@@ -236,6 +292,7 @@ class PDScopeScheduler(ExpertScheduler):
         placement: PlacementSnapshot,
         latency: ExpertLatencyModel,
     ) -> ExpertSchedule:
+        """根据阶段分发到 prefill 或 decode 调度逻辑"""
         if request.phase == "prefill":
             return self.schedule_prefill(request, placement, latency)
         return self.schedule_decode(request, placement, latency)
@@ -246,6 +303,14 @@ class PDScopeScheduler(ExpertScheduler):
         placement: PlacementSnapshot,
         latency: ExpertLatencyModel,
     ) -> ExpertSchedule:
+        """Prefill 阶段调度：三步调度法
+
+        步骤：
+        1. 分离当前驻留/非驻留专家和未来非驻留专家
+        2. 合并排序后构造全局候选队列
+        3. 从全局队列中选出当前层值得按需加载到 GPU 的专家
+        4. 根据 I/O 气泡窗口选择未来专家预加载
+        """
         current = request.current
         current_resident = [d for d in current if placement.is_on_gpu(d.key.layer, d.key.expert_id)]
         current_non_resident = [d for d in current if not placement.is_on_gpu(d.key.layer, d.key.expert_id)]
@@ -275,6 +340,17 @@ class PDScopeScheduler(ExpertScheduler):
         placement: PlacementSnapshot,
         latency: ExpertLatencyModel,
     ) -> ExpertSchedule:
+        """Decode 阶段调度：ABCD 模式决策
+
+        步骤：
+        1. 计算理想 GPU 专家数 n_g_rho（最小化 max(GPU时间, CPU时间)）
+        2. 评估当前层和下一层的驻留是否充足
+        3. 根据四种情况决策：
+           - 当前不足 + 下一层不足 → fallback 到 prefill 策略
+           - 当前不足 + 下一层充足 → 补当前层 GPU 专家（mode-a）
+           - 当前充足 + 下一层不足 → 预加载下一层专家（mode-b）
+           - 当前充足 + 下一层充足 → 不额外操作（mode-c）
+        """
         current = request.current
         if not current:
             return ExpertSchedule(reason="decode-empty")
@@ -331,6 +407,11 @@ class PDScopeScheduler(ExpertScheduler):
         demands: List[ExpertDemand],
         latency: ExpertLatencyModel,
     ) -> List[ExpertDemand]:
+        """构造全局候选队列：从合并需求中选出值得 GPU 化的专家子集
+
+        从右向左扫描，找到第一个满足 T_gpu < T_cpu 的分割点，
+        分割点右侧的专家放入 GPU 候选队列。
+        """
         if not demands:
             return []
         for i in range(len(demands)):
@@ -347,6 +428,16 @@ class PDScopeScheduler(ExpertScheduler):
         current_global: List[ExpertDemand],
         latency: ExpertLatencyModel,
     ) -> Tuple[List[ExpertDemand], float, float]:
+        """从当前层全局候选中选出值得按需加载到 GPU 的专家
+
+        遍历所有分割点，找到第一个 GPU 时间 < CPU 时间的位置，
+        该位置右侧的当前层专家值得按需加载到 GPU 执行。
+
+        Returns:
+            ondemand: 按需加载到 GPU 的当前层专家列表
+            t_gpu: GPU 侧执行时间
+            t_cpu: CPU 侧执行时间
+        """
         if not current_global:
             return [], 0.0, 0.0
         last_t_gpu = 0.0
@@ -372,6 +463,13 @@ class PDScopeScheduler(ExpertScheduler):
         placement: PlacementSnapshot,
         latency: ExpertLatencyModel,
     ) -> List[ExpertDemand]:
+        """根据 I/O 气泡窗口和 placeholder 容量选择可预加载的未来专家
+
+        计算逻辑：
+        1. t_gap = max(0, t_cpu - t_gpu) 为可用气泡时间
+        2. capacity = min(空闲placeholder数, 气泡内可传输的专家数)
+        3. 从未来预测专家中按 score 降序选取最多 capacity 个
+        """
         t_gap = max(0.0, t_cpu - t_gpu)
         capacity = min(placement.free_placeholders, math.floor((t_gap + self.t_attn) / max(latency.t_io, 1e-9)))
         if capacity <= 0:
@@ -385,7 +483,21 @@ class PDScopeScheduler(ExpertScheduler):
 
 
 class PrefetchHybridStrategy(ExpertSchedulingStrategy):
-    """PDScope AdaptSched 调度策略：区分 Prefill 三步调度法和 Decode ABC 策略"""
+    """PDScope AdaptSched 调度策略：区分 Prefill 三步调度法和 Decode ABC 策略
+
+    职责：
+    - 作为 deepseek.py 与 PDScopeScheduler 之间的适配层
+    - 从 gate 输出构造当前专家需求
+    - 接收预测出的未来专家需求
+    - 接收 placeholder_manager 的驻留快照
+    - 构造 ExpertLayerRequest 并调用 PDScopeScheduler
+    - 把 ExpertSchedule 转回 deepseek.py 使用的返回格式
+
+    参数：
+    - t_io: 专家权重传输延迟（秒）
+    - latency_cpu_table: CPU 延迟查找表 {token_count: time_ms}
+    - latency_gpu_table: GPU 延迟查找表 {token_count: time_ms}
+    """
 
     def __init__(self, dev, is_expert_in_gpu, t_io: float,
                  latency_cpu_table: Dict[int, float],
@@ -412,6 +524,22 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
         future_demands: Optional[List[ExpertDemand]] = None,
         placement: Optional[PlacementSnapshot] = None,
     ) -> Tuple[List[int], List[int], List[int], Dict[int, Tuple[torch.Tensor, torch.Tensor]]]:
+        """策略决策入口：构造请求并调用 PDScopeScheduler
+
+        流程：
+        1. 从 selected_experts 构建 expert mask
+        2. 收集活跃专家并组织 token 分配
+        3. 构造 current_demands 和 future_demands
+        4. 更新 GPU 命中统计
+        5. 构造 ExpertLayerRequest 并调用 scheduler.schedule()
+        6. 从 ExpertSchedule 提取 CPU/GPU/preload 专家 id 列表
+
+        Returns:
+            cpu_expert_ids: CPU 执行的专家 id 列表
+            gpu_expert_ids: GPU 执行的专家 id 列表
+            preload_expert_ids: 预加载的专家 id 列表
+            raw_assignments: 原始 (token_indices, routing_weights) 字典
+        """
         expert_mask = _build_expert_mask(selected_experts, n_expert)
         active_experts, _, token_indices_by_expert = _collect_active_experts(expert_mask, n_expert)
         raw_assignments = _organize_token_assignments(expert_mask, routing_weights, active_experts)
@@ -446,6 +574,10 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
         self, i_layer, cpu_experts, gpu_experts, token_counts,
         predicted_next_experts, predicted_next_weights,
     ) -> List[int]:
+        """旧版 prefill 调度逻辑（已被 PDScopeScheduler.schedule_prefill 替代）
+
+        保留用于兼容和对比测试。内部使用原始 tuple 格式而非 ExpertDemand。
+        """
         t_attn = 0.6
 
         cur_non_resident = []
@@ -527,6 +659,10 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
         self, i_layer, cpu_experts, gpu_experts, token_counts,
         predicted_next_experts, predicted_next_weights,
     ) -> List[int]:
+        """旧版 decode 调度逻辑（已被 PDScopeScheduler.schedule_decode 替代）
+
+        保留用于兼容和对比测试。内部使用原始 tuple 格式而非 ExpertDemand。
+        """
         k = len(cpu_experts) + len(gpu_experts)
         if k == 0:
             return []

@@ -17,7 +17,7 @@ from transformers.masking_utils import create_causal_mask
 from expert_scheduling import (
     ExpertSchedulingStrategy,
     GPUOnlyStrategy,
-    HybridCPUGPUStrategy,
+    FiddlerStrategy,
     PrefetchHybridStrategy,
     _build_latency_lookup,
 )
