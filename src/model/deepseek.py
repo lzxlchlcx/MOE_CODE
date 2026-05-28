@@ -74,25 +74,25 @@ class FiddlerDeepSeek:
 
         ### 加载基准数据，设置专家调度策略的 CPU/GPU 延迟参数
         self.latency_cpu = 0.142
-        self.latencu_copy = 1.67
-        self.latencu_gpu = 0.093
+        self.latency_copy = 1.67
+        self.latency_gpu = 0.093
         self.latency_cpu_table = {1: 0.142}
         self.latency_gpu_table = {1: 0.093}
         benchmark_data = self._load_benchmark_data(args.model)
         if benchmark_data is not None:
             try:
                 self.latency_cpu = benchmark_data["expert_cpu"][0]["avg_time_ms"]
-                self.latencu_copy = benchmark_data["expert_weight_copy"]["avg_ms"]
-                self.latencu_gpu = benchmark_data["expert_gpu"][0]["avg_time_ms"]
+                self.latency_copy = benchmark_data["expert_weight_copy"]["avg_ms"]
+                self.latency_gpu = benchmark_data["expert_gpu"][0]["avg_time_ms"]
                 self.latency_cpu_table = _build_latency_lookup(benchmark_data["expert_cpu"])
                 self.latency_gpu_table = _build_latency_lookup(benchmark_data["expert_gpu"])
-                print(f"Loaded benchmark latency_cpu={self.latency_cpu:.4f}ms, latencu_copy={self.latencu_copy:.4f}ms, latencu_gpu={self.latencu_gpu:.4f}ms")
+                print(f"Loaded benchmark latency_cpu={self.latency_cpu:.4f}ms, latency_copy={self.latency_copy:.4f}ms, latency_gpu={self.latency_gpu:.4f}ms")
                 print(f"Latency CPU table: {self.latency_cpu_table}")
                 print(f"Latency GPU table: {self.latency_gpu_table}")
             except (KeyError, TypeError) as e:
                 print(f"Warning: Malformed benchmark data, using defaults: {e}")
         else:
-            print(f"Benchmark file not found, using default latency_cpu={self.latency_cpu}ms, latencu_copy={self.latencu_copy}ms")
+            print(f"Benchmark file not found, using default latency_cpu={self.latency_cpu}ms, latency_copy={self.latency_copy}ms")
 
         self.cnt_expert_hit = 0
         self.cnt_expert_all = 0
@@ -103,7 +103,7 @@ class FiddlerDeepSeek:
         else:
             self.expert_strategy = PrefetchHybridStrategy(
                 self.dev, self.is_expert_in_gpu,
-                t_io=self.latencu_copy,
+                t_io=self.latency_copy,
                 latency_cpu_table=self.latency_cpu_table,
                 latency_gpu_table=self.latency_gpu_table,
             )
@@ -113,7 +113,7 @@ class FiddlerDeepSeek:
         self.expert_predictor = GatePredictor()
         self.predicted_next_demands = []
         self.latency_model = ExpertLatencyModel(
-            t_io=self.latencu_copy,
+            t_io=self.latency_copy,
             latency_cpu_table=self.latency_cpu_table,
             latency_gpu_table=self.latency_gpu_table,
         )

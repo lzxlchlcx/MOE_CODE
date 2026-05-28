@@ -113,6 +113,10 @@ class ExpertPlaceholderManager:
             key = (layer_id, expert_id)
             return key in self._static_gpu_resident or key in self._reverse_map
 
+    def is_static_gpu_resident(self, layer_id: int, expert_id: int) -> bool:
+        with self._lock:
+            return (layer_id, expert_id) in self._static_gpu_resident
+
     def snapshot(self) -> PlacementSnapshot:
         with self._lock:
             return PlacementSnapshot(

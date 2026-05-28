@@ -47,9 +47,10 @@ class ExpertExecutionManager:
         result = torch.zeros_like(context.inps_flat, device=self.device)
         for expert_id in expert_ids:
             assignment = context.assignments[expert_id]
-            current_state = context.inps_flat[None, assignment.token_indices.tolist()].reshape(-1, context.hidden_dim)
+            token_indices = assignment.token_indices.to(self.device).long().contiguous()
+            current_state = context.inps_flat.index_select(0, token_indices)
             placeholder = self.placeholder_manager.get_placeholder_for_expert(context.layer, expert_id)
-            if self.is_expert_in_gpu(context.layer, expert_id):
+            if self.placeholder_manager.is_static_gpu_resident(context.layer, expert_id):
                 current_state = context.experts[expert_id](current_state)
             elif placeholder is not None:
                 self.preload_hit_count += 1
@@ -63,25 +64,24 @@ class ExpertExecutionManager:
                 self.placeholder_manager.release_by_layer(context.layer)
 
             current_state = current_state * assignment.routing_weights
-            result.index_add_(
-                0,
-                assignment.token_indices.to(self.device, non_blocking=True),
-                current_state.to(result.dtype),
-            )
+            result.index_add_(0, token_indices, current_state.to(result.dtype))
         return result
 
     def execute_cpu_experts(self, context: ExpertLayerContext, expert_ids: List[int]) -> torch.Tensor:
         result = torch.zeros_like(context.inps_flat, device="cpu")
         for expert_id in expert_ids:
             assignment = context.assignments[expert_id]
-            current_state = context.inps_flat[None, assignment.token_indices.tolist()].reshape(-1, context.hidden_dim)
+            token_indices_gpu = assignment.token_indices.to(
+                device=context.inps_flat.device,
+                dtype=torch.long,
+                non_blocking=True,
+            ).contiguous()
+            token_indices_cpu = token_indices_gpu.to("cpu", non_blocking=True)
+            
+            current_state = context.inps_flat.index_select(0, token_indices_gpu)
             current_state = self.model.layers[context.layer].mlp.experts[expert_id](current_state.to("cpu"))
             current_state = current_state * assignment.routing_weights.to("cpu")
-            result.index_add_(
-                0,
-                assignment.token_indices.to("cpu", non_blocking=True),
-                current_state.to(result.dtype),
-            )
+            result.index_add_(0, token_indices_cpu, current_state.to(result.dtype))
         return result
 
     def preload_experts(self, demands) -> None:
