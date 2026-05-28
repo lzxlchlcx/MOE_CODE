@@ -4,7 +4,7 @@ from typing import List
 import torch
 import torch.nn as nn
 
-from expert_types import ExpertDemand, build_future_demands
+from model.expert_types import ExpertDemand, build_future_demands
 
 
 class ExpertPredictor(ABC):

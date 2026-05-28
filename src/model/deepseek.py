@@ -14,19 +14,19 @@ import transformers
 from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2RotaryEmbedding
 from transformers.masking_utils import create_causal_mask
 
-from expert_scheduling import (
+from model.expert_scheduling import (
     ExpertSchedulingStrategy,
     GPUOnlyStrategy,
     HybridCPUGPUStrategy,
     PrefetchHybridStrategy,
     _build_latency_lookup,
 )
-from placeholder_manager import ExpertPlaceholderManager
-from eviction_strategy import LRUEvictionStrategy
-from expert_predictor import ExpertPredictor, GatePredictor
-from expert_executor import ExpertExecutionManager
-from expert_latency import ExpertLatencyModel
-from expert_types import ExpertDemand, ExpertKey, ExpertLayerContext, ExpertSchedule, build_assignments
+from model.placeholder_manager import ExpertPlaceholderManager
+from model.eviction_strategy import LRUEvictionStrategy
+from model.expert_predictor import ExpertPredictor, GatePredictor
+from model.expert_executor import ExpertExecutionManager
+from model.expert_latency import ExpertLatencyModel
+from model.expert_types import ExpertDemand, ExpertKey, ExpertLayerContext, ExpertSchedule, build_assignments
 
 class FiddlerDeepSeek:
 

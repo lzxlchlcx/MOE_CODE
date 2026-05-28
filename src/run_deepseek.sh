@@ -1,6 +1,6 @@
 #!/bin/bash
-cd "$(dirname "$0")/src/"
-python infer_deepseek.py \
+cd "$(dirname "$0")"
+PYTHONPATH="$(dirname "$0")" python ./scripts/infer_deepseek.py \
     --model /mnt/g/Models/DeepSeek-v2-lite-chat \
     --cpu-offload 0 \
     --batch-size 1 \

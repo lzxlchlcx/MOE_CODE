@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from expert_latency import ExpertLatencyModel
-from expert_types import (
+from model.expert_latency import ExpertLatencyModel
+from model.expert_types import (
     ExpertDemand,
     ExpertKey,
     ExpertLayerRequest,

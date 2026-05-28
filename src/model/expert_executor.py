@@ -4,7 +4,7 @@ from typing import Callable, Dict, List, Optional
 
 import torch
 
-from expert_types import ExpertLayerContext, ExpertSchedule
+from model.expert_types import ExpertLayerContext, ExpertSchedule
 
 
 class ExpertExecutionManager:

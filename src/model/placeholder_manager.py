@@ -5,8 +5,8 @@ from typing import Optional, List, Tuple, Dict
 import torch
 import torch.nn as nn
 
-from eviction_strategy import EvictionStrategy
-from expert_types import PlacementSnapshot
+from model.eviction_strategy import EvictionStrategy
+from model.expert_types import PlacementSnapshot
 
 
 class ExpertPlaceholderManager:
