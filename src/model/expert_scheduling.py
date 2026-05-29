@@ -353,6 +353,7 @@ class PDScopeScheduler(ExpertScheduler):
         """
         current = request.current
         if not current:
+            print(f"[DecodeSchedule] layer={request.layer} reason=decode-empty")
             return ExpertSchedule(reason="decode-empty")
 
         k = len(current)
@@ -361,7 +362,7 @@ class PDScopeScheduler(ExpertScheduler):
         n_g_rho = min(
             range(k + 1),
             key=lambda n_g: max(n_g * t_g, (k - n_g) * t_c),
-        )
+        ) # 计算理想 GPU 专家数，最小化 max(GPU时间, CPU时间)
 
         current_resident = [d for d in current if placement.is_on_gpu(d.key.layer, d.key.expert_id)]
         current_non_resident = [d for d in current if not placement.is_on_gpu(d.key.layer, d.key.expert_id)]
@@ -375,32 +376,78 @@ class PDScopeScheduler(ExpertScheduler):
             if placement.is_on_gpu(d.key.layer, d.key.expert_id)
         )
 
-        cur_below = len(current_resident) < n_g_rho
-        next_below = next_resident_count < n_g_rho
+        cur_below = len(current_resident) < n_g_rho # 当前层驻留专家数不足以满足理想 GPU 专家数
+        next_below = next_resident_count < n_g_rho # 下一层驻留专家数不足以满足理想 GPU 专家数
+
+        current_ids = [d.key.expert_id for d in current]
+        current_resident_ids = [d.key.expert_id for d in current_resident]
+        current_non_resident_ids = [d.key.expert_id for d in current_non_resident]
+        future_ids = [d.key.expert_id for d in request.future]
+        future_non_resident_ids = [d.key.expert_id for d in future_non_resident]
+        print(
+            "[DecodeSchedule] "
+            f"layer={request.layer} k={k} t_cpu_1={t_c:.4f} t_gpu_1={t_g:.4f} "
+            f"t_io={latency.t_io:.4f} n_g_rho={n_g_rho} "
+            f"current={current_ids} current_resident={current_resident_ids} "
+            f"current_non_resident={current_non_resident_ids} "
+            f"future={future_ids} future_non_resident={future_non_resident_ids} "
+            f"next_resident_count={next_resident_count} "
+            f"free_placeholders={placement.free_placeholders} "
+            f"cur_below={cur_below} next_below={next_below}"
+        )
 
         if cur_below and next_below:
+        # 当前层和下一层驻留都不足，回退到 prefill 策略，尝试通过预加载来提升未来层驻留，从而间接提升当前层驻留
             schedule = self.schedule_prefill(request, placement, latency)
             schedule.reason = "decode-fallback-prefill"
+            print(
+                "[DecodeSchedule] "
+                f"layer={request.layer} mode={schedule.reason} "
+                f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} "
+                f"preload={schedule.preload_expert_ids}"
+            )
             return schedule
         if cur_below and not next_below:
+        # 当前层驻留不足但下一层充足，优先补齐当前层 GPU 专家（mode-a），从全局候选中选取分数最高的 n_g_rho 个专家放入 GPU，剩余放 CPU
             need = min(n_g_rho - len(current_resident), len(current_non_resident))
             ondemand = current_non_resident[:need]
             gpu_keys = {(d.key.layer, d.key.expert_id) for d in current_resident + ondemand}
             gpu = [d for d in current if (d.key.layer, d.key.expert_id) in gpu_keys]
             cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
-            return ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-a")
+            schedule = ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-a")
+            print(
+                "[DecodeSchedule] "
+                f"layer={request.layer} mode={schedule.reason} need_current={need} "
+                f"ondemand={[d.key.expert_id for d in ondemand]} "
+                f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} preload=[]"
+            )
+            return schedule
         if not cur_below and next_below:
+        # 当前层驻留充足但下一层不足，预加载下一层专家（mode-b）
             need_next = max(0, min(n_g_rho - next_resident_count, placement.free_placeholders))
             preload = future_non_resident[:need_next]
             gpu = current_resident
             gpu_keys = {(d.key.layer, d.key.expert_id) for d in gpu}
             cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
-            return ExpertSchedule(cpu=cpu, gpu=gpu, preload=preload, evict=[], reason="decode-mode-b")
+            schedule = ExpertSchedule(cpu=cpu, gpu=gpu, preload=preload, evict=[], reason="decode-mode-b")
+            print(
+                "[DecodeSchedule] "
+                f"layer={request.layer} mode={schedule.reason} need_next={need_next} "
+                f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} "
+                f"preload={schedule.preload_expert_ids}"
+            )
+            return schedule
 
         gpu = current_resident
         gpu_keys = {(d.key.layer, d.key.expert_id) for d in gpu}
         cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
-        return ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-c")
+        schedule = ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-c")
+        print(
+            "[DecodeSchedule] "
+            f"layer={request.layer} mode={schedule.reason} "
+            f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} preload=[]"
+        )
+        return schedule
 
     def _select_global_queue(
         self,

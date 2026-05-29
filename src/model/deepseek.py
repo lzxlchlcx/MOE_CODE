@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import time
+from collections import Counter
 from typing import List, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -96,16 +97,23 @@ class FiddlerDeepSeek:
 
         self.cnt_expert_hit = 0
         self.cnt_expert_all = 0
+        self.hot_expert_counts = Counter()
 
         # 初始化策略
         if args.cpu_offload == 0:
             self.expert_strategy = GPUOnlyStrategy(self.dev, self.is_expert_in_gpu)
-        else:
+        elif args.cpu_offload == 1:
             self.expert_strategy = PrefetchHybridStrategy(
                 self.dev, self.is_expert_in_gpu,
                 t_io=self.latency_copy,
                 latency_cpu_table=self.latency_cpu_table,
                 latency_gpu_table=self.latency_gpu_table,
+            )
+        else:
+            self.expert_strategy = FiddlerStrategy(
+                self.dev, self.is_expert_in_gpu,
+                latency_cpu=self.latency_cpu,
+                latency_gpu=self.latency_copy
             )
             self.hybrid_strategy = self.expert_strategy
         self.gpu_only_strategy = GPUOnlyStrategy(self.dev, self.is_expert_in_gpu)
@@ -382,6 +390,25 @@ class FiddlerDeepSeek:
             self.cnt_expert_hit / max(self.cnt_expert_all, 1),
         )
 
+    def reset_hot_expert_stats(self):
+        self.hot_expert_counts.clear()
+
+    def record_hot_expert_selection(self, i_layer, selected_experts):
+        selected = selected_experts.detach().to("cpu").reshape(-1).tolist()
+        self.hot_expert_counts.update((int(i_layer), int(i_expert)) for i_expert in selected)
+
+    def sorted_hot_expert_stats(self):
+        return sorted(
+            self.hot_expert_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )
+
+    def export_hot_expert_stats(self):
+        return [
+            {"layer": layer, "expert": expert, "count": count}
+            for (layer, expert), count in self.sorted_hot_expert_stats()
+        ]
+
     @torch.no_grad()
     def mixtral_forward(self, input_ids, position_ids, attention_mask, cache_position, is_prefill=False):
         hidden_dim = self.model.config.hidden_size
@@ -471,6 +498,8 @@ class FiddlerDeepSeek:
             inps = inps.view(batch_size, seq_len, hidden_dim)
 
             selected_experts, routing_weights = layer.mlp.gate(inps)
+            # 记录专家选择统计
+            self.record_hot_expert_selection(i_layer, selected_experts)
 
             # 与当前层专家执行并行：预测下一层活跃专家
             predict_future = None
@@ -511,7 +540,7 @@ class FiddlerDeepSeek:
             else:
                 cpu_experts, gpu_experts, expert_assignments = result_tuple
                 prefetch_experts = []
-            print(f"Layer {i_layer}: GPU experts: {gpu_experts}, CPU experts: {cpu_experts}, Prefetch: {prefetch_experts}")
+            # print(f"Layer {i_layer}: GPU experts: {gpu_experts}, CPU experts: {cpu_experts}, Prefetch: {prefetch_experts}")
 
             # 更新统计（如果是 Hybrid 策略）
             if hasattr(self, 'hybrid_strategy') and not force_gpu:

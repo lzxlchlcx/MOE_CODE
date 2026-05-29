@@ -33,8 +33,8 @@ if __name__ == "__main__":
         "--cpu-offload",
         type=int,
         default=1,
-        choices=[0, 1],
-        help="0: execute at GPU (baseline), 1: offload to CPU.",
+        choices=[0, 1, 2],
+        help="0: execute at GPU (baseline), 1: Scope strategy, 2: Fiddler strategy.",
     )
     parser.add_argument(
         "--batch-size",

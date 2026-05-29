@@ -276,7 +276,7 @@ if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     parser.add_argument("--model", type=str, required=True, help="Path to DeepSeek model.")
-    parser.add_argument("--cpu-offload", type=int, default=1, choices=[0, 1])
+    parser.add_argument("--cpu-offload", type=int, default=0, choices=[0, 1, 2])
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--beam-width", type=int, default=1)
 
