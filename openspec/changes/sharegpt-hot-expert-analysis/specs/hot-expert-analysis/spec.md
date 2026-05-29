@@ -23,7 +23,7 @@
 - **THEN** 系统 MUST NOT 将该执行位置作为热度来源替代 gate 选择统计
 
 ### Requirement: 热专家文本输出
-系统 SHALL 将热专家排序结果保存到 `hot/` 目录下的文本文件，默认文件可被现有 `FiddlerDeepSeek.set_expert_loc()` 读取。
+系统 SHALL 将热专家排序结果保存到 `hot/` 目录下的文本文件，默认文件可被现有 `mDeepSeek.set_expert_loc()` 读取。
 
 #### Scenario: 生成默认 hot 文件
 - **WHEN** 热专家分析完成且用户未指定自定义输出文件名

@@ -7,7 +7,7 @@
 ## 2. 调度策略接口与基类
 
 - [x] 2.1 定义 `ExpertSchedulingStrategy` 抽象基类与 `decide_and_prepare` 接口
-- [x] 2.2 在 `FiddlerDeepSeek.__init__` 中准备策略上下文（`expert_placeholder`、`dev`、`is_expert_in_gpu` 方法引用等）
+- [x] 2.2 在 `mDeepSeek.__init__` 中准备策略上下文（`expert_placeholder`、`dev`、`is_expert_in_gpu` 方法引用等）
 
 ## 3. GPUOnlyStrategy 实现
 
@@ -21,7 +21,7 @@
 - [x] 4.3 实现穷举搜索最优配置（2^n_active）
 - [x] 4.4 实现 `decide_and_prepare` 返回 CPU/GPU 分配列表和 token 分配信息
 
-## 5. FiddlerDeepSeek 集成与解耦
+## 5. mDeepSeek 集成与解耦
 
 - [x] 5.1 在 `__init__` 中根据 `args.cpu_offload` 选择并实例化策略对象
 - [x] 5.2 修改 `mixtral_forward`，删除第 411-533 行的内联专家执行代码

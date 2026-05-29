@@ -1,134 +1,134 @@
 {
   "model_name": "deepseek-v2-lite-chat",
-  "timestamp": "2026-05-17T13:03:10.297294",
+  "timestamp": "2026-05-29T17:17:23.457772",
   "expert_cpu": [
     {
       "token_count": 1,
-      "avg_time_ms": 0.142
+      "avg_time_ms": 0.1667
     },
     {
       "token_count": 2,
-      "avg_time_ms": 0.3221
+      "avg_time_ms": 0.2478
     },
     {
       "token_count": 4,
-      "avg_time_ms": 0.4089
+      "avg_time_ms": 0.3916
     },
     {
       "token_count": 8,
-      "avg_time_ms": 0.7535
+      "avg_time_ms": 0.7146
     },
     {
       "token_count": 16,
-      "avg_time_ms": 1.5126
+      "avg_time_ms": 1.4036
     },
     {
       "token_count": 32,
-      "avg_time_ms": 2.8858
+      "avg_time_ms": 2.7065
     },
     {
       "token_count": 64,
-      "avg_time_ms": 5.7526
+      "avg_time_ms": 5.4868
     },
     {
       "token_count": 128,
-      "avg_time_ms": 11.5826
+      "avg_time_ms": 11.0067
     }
   ],
   "expert_gpu": [
     {
       "token_count": 1,
-      "avg_time_ms": 0.0928
+      "avg_time_ms": 0.091
     },
     {
       "token_count": 2,
-      "avg_time_ms": 0.095
+      "avg_time_ms": 0.0861
     },
     {
       "token_count": 4,
-      "avg_time_ms": 0.0936
+      "avg_time_ms": 0.0858
     },
     {
       "token_count": 8,
-      "avg_time_ms": 0.0918
+      "avg_time_ms": 0.087
     },
     {
       "token_count": 16,
-      "avg_time_ms": 0.0928
+      "avg_time_ms": 0.0855
     },
     {
       "token_count": 32,
-      "avg_time_ms": 0.1026
+      "avg_time_ms": 0.0919
     },
     {
       "token_count": 64,
-      "avg_time_ms": 0.1074
+      "avg_time_ms": 0.0996
     },
     {
       "token_count": 128,
-      "avg_time_ms": 0.1175
+      "avg_time_ms": 0.1085
     }
   ],
   "expert_weight_copy": {
     "trials_ms": [
-      1.8256,
-      1.0107,
-      3.408,
-      1.1055,
-      0.9942
+      1.0314,
+      0.8154,
+      0.8602,
+      0.849,
+      0.8967
     ],
-    "avg_ms": 1.6688
+    "avg_ms": 0.8905
   },
   "attention_prefill": [
     {
       "token_count": 1,
-      "avg_time_ms": 0.9661
+      "avg_time_ms": 0.4675
     },
     {
       "token_count": 8,
-      "avg_time_ms": 1.156
+      "avg_time_ms": 0.4428
     },
     {
       "token_count": 32,
-      "avg_time_ms": 0.9266
+      "avg_time_ms": 0.4799
     },
     {
       "token_count": 64,
-      "avg_time_ms": 0.5041
+      "avg_time_ms": 0.4946
     },
     {
       "token_count": 128,
-      "avg_time_ms": 0.548
+      "avg_time_ms": 0.4858
     },
     {
       "token_count": 256,
-      "avg_time_ms": 0.6479
+      "avg_time_ms": 0.495
     }
   ],
   "attention_decode": [
     {
       "past_length": 1,
-      "avg_time_ms": 0.5446
+      "avg_time_ms": 0.4499
     },
     {
       "past_length": 8,
-      "avg_time_ms": 0.4589
+      "avg_time_ms": 0.4132
     },
     {
       "past_length": 32,
-      "avg_time_ms": 0.7574
+      "avg_time_ms": 0.4579
     },
     {
       "past_length": 64,
-      "avg_time_ms": 0.7007
+      "avg_time_ms": 0.4348
     },
     {
       "past_length": 128,
-      "avg_time_ms": 0.553
+      "avg_time_ms": 0.5549
     },
     {
       "past_length": 256,
-      "avg_time_ms": 0.7353
+      "avg_time_ms": 0.4197
     }
   ]
 }

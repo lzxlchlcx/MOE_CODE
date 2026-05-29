@@ -13,7 +13,7 @@
 - [x] 2.5 实现占位符释放和按层释放方法
 - [x] 2.6 实现状态查询方法
 
-## 3. 集成到 FiddlerDeepSeek 类
+## 3. 集成到 mDeepSeek 类
 
 - [x] 3.1 在 deepseek.py 中导入 ExpertPlaceholderManager 和淘汰策略
 - [x] 3.2 在 __init__ 方法中初始化占位符管理器（配置淘汰策略）

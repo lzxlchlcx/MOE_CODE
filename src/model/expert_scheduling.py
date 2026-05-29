@@ -131,13 +131,14 @@ class FiddlerStrategy(ExpertSchedulingStrategy):
     
     职责：
     - 构建每个活跃专家的 CPU/GPU 执行代价表
-    - 穷举 2^n_active 种配置找到最小代价的分配方案
+    - 按每个活跃专家独立选择代价更低的 CPU/GPU 执行位置
     - 统计 GPU 缓存命中率
     """
-    def __init__(self, dev, is_expert_in_gpu, latency_cpu, latency_gpu):
+    def __init__(self, dev, is_expert_in_gpu, latency_cpu, latency_gpu, latency_io):
         super().__init__(dev, is_expert_in_gpu)
         self.latency_cpu = latency_cpu  # CPU 上每个 token 的延迟
-        self.latency_gpu = latency_gpu  # 将专家权重从 CPU 拷贝到 GPU 的固定延迟
+        self.latency_gpu = latency_gpu  # GPU 上执行专家的固定延迟
+        self.latency_io = latency_io  # 将专家权重从 CPU 拷贝到 GPU 的固定延迟
         self.cnt_expert_hit = 0  # GPU 缓存命中的 token 数
         self.cnt_expert_all = 0  # 总 token 数
 
@@ -148,8 +149,9 @@ class FiddlerStrategy(ExpertSchedulingStrategy):
         selected_experts: torch.Tensor,
         routing_weights: torch.Tensor,
         n_expert: int,
+        **kwargs,
     ) -> Tuple[List[int], List[int], Dict[int, Tuple[torch.Tensor, torch.Tensor]]]:
-        """决策：通过穷举 2^n_active 种配置找到代价最小的 CPU/GPU 分配方案
+        """决策：逐专家选择代价最小的 CPU/GPU 分配方案
         
         Args:
             i_layer: 当前层索引
@@ -167,37 +169,18 @@ class FiddlerStrategy(ExpertSchedulingStrategy):
         active_experts, idxs, top_2s = _collect_active_experts(expert_mask, n_expert)
         expert_assignments = _organize_token_assignments(expert_mask, routing_weights, active_experts)
         
-        n_active = len(active_experts)
-        cost_cpu = np.zeros(n_active, dtype=float)
-        cost_gpu = np.zeros(n_active, dtype=float)
-        for bit, i_expert in enumerate(active_experts):
-            token_count = top_2s[i_expert].shape[0]
-            cost_cpu[bit] = token_count * self.latency_cpu
-            cost_gpu[bit] = self.latency_gpu
-            if self.is_expert_in_gpu(i_layer, i_expert):
-                cost_gpu[bit] = 0
-                self.cnt_expert_hit += token_count
-            self.cnt_expert_all += token_count
-        
-        # 穷举搜索最优配置
-        best_config = -1
-        best_cost = float("inf")
-        for config in range(1 << n_active):
-            sum_cost = 0
-            for bit in range(n_active):
-                if (config >> bit) & 1:
-                    sum_cost += cost_cpu[bit]
-                else:
-                    sum_cost += cost_gpu[bit]
-            if sum_cost < best_cost:
-                best_cost = sum_cost
-                best_config = config
-        
-        # 解码最优配置
         cpu_experts = []
         gpu_experts = []
-        for bit, i_expert in enumerate(active_experts):
-            if (best_config >> bit) & 1:
+        for i_expert in active_experts:
+            token_count = top_2s[i_expert].shape[0]
+            cost_cpu = token_count * self.latency_cpu
+            cost_gpu = self.latency_gpu + self.latency_io
+            if self.is_expert_in_gpu(i_layer, i_expert):
+                cost_gpu = 0
+                self.cnt_expert_hit += token_count
+            self.cnt_expert_all += token_count
+
+            if cost_cpu < cost_gpu:
                 cpu_experts.append(i_expert)
             else:
                 gpu_experts.append(i_expert)
@@ -384,28 +367,28 @@ class PDScopeScheduler(ExpertScheduler):
         current_non_resident_ids = [d.key.expert_id for d in current_non_resident]
         future_ids = [d.key.expert_id for d in request.future]
         future_non_resident_ids = [d.key.expert_id for d in future_non_resident]
-        print(
-            "[DecodeSchedule] "
-            f"layer={request.layer} k={k} t_cpu_1={t_c:.4f} t_gpu_1={t_g:.4f} "
-            f"t_io={latency.t_io:.4f} n_g_rho={n_g_rho} "
-            f"current={current_ids} current_resident={current_resident_ids} "
-            f"current_non_resident={current_non_resident_ids} "
-            f"future={future_ids} future_non_resident={future_non_resident_ids} "
-            f"next_resident_count={next_resident_count} "
-            f"free_placeholders={placement.free_placeholders} "
-            f"cur_below={cur_below} next_below={next_below}"
-        )
+        # print(
+        #     "[DecodeSchedule] "
+        #     f"layer={request.layer} k={k} t_cpu_1={t_c:.4f} t_gpu_1={t_g:.4f} "
+        #     f"t_io={latency.t_io:.4f} n_g_rho={n_g_rho} "
+        #     f"current={current_ids} current_resident={current_resident_ids} "
+        #     f"current_non_resident={current_non_resident_ids} "
+        #     f"future={future_ids} future_non_resident={future_non_resident_ids} "
+        #     f"next_resident_count={next_resident_count} "
+        #     f"free_placeholders={placement.free_placeholders} "
+        #     f"cur_below={cur_below} next_below={next_below}"
+        # )
 
         if cur_below and next_below:
         # 当前层和下一层驻留都不足，回退到 prefill 策略，尝试通过预加载来提升未来层驻留，从而间接提升当前层驻留
             schedule = self.schedule_prefill(request, placement, latency)
             schedule.reason = "decode-fallback-prefill"
-            print(
-                "[DecodeSchedule] "
-                f"layer={request.layer} mode={schedule.reason} "
-                f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} "
-                f"preload={schedule.preload_expert_ids}"
-            )
+            # print(
+            #     "[DecodeSchedule] "
+            #     f"layer={request.layer} mode={schedule.reason} "
+            #     f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} "
+            #     f"preload={schedule.preload_expert_ids}"
+            # )
             return schedule
         if cur_below and not next_below:
         # 当前层驻留不足但下一层充足，优先补齐当前层 GPU 专家（mode-a），从全局候选中选取分数最高的 n_g_rho 个专家放入 GPU，剩余放 CPU
@@ -415,12 +398,12 @@ class PDScopeScheduler(ExpertScheduler):
             gpu = [d for d in current if (d.key.layer, d.key.expert_id) in gpu_keys]
             cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
             schedule = ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-a")
-            print(
-                "[DecodeSchedule] "
-                f"layer={request.layer} mode={schedule.reason} need_current={need} "
-                f"ondemand={[d.key.expert_id for d in ondemand]} "
-                f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} preload=[]"
-            )
+            # print(
+            #     "[DecodeSchedule] "
+            #     f"layer={request.layer} mode={schedule.reason} need_current={need} "
+            #     f"ondemand={[d.key.expert_id for d in ondemand]} "
+            #     f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} preload=[]"
+            # )
             return schedule
         if not cur_below and next_below:
         # 当前层驻留充足但下一层不足，预加载下一层专家（mode-b）
@@ -430,23 +413,23 @@ class PDScopeScheduler(ExpertScheduler):
             gpu_keys = {(d.key.layer, d.key.expert_id) for d in gpu}
             cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
             schedule = ExpertSchedule(cpu=cpu, gpu=gpu, preload=preload, evict=[], reason="decode-mode-b")
-            print(
-                "[DecodeSchedule] "
-                f"layer={request.layer} mode={schedule.reason} need_next={need_next} "
-                f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} "
-                f"preload={schedule.preload_expert_ids}"
-            )
+            # print(
+            #     "[DecodeSchedule] "
+            #     f"layer={request.layer} mode={schedule.reason} need_next={need_next} "
+            #     f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} "
+            #     f"preload={schedule.preload_expert_ids}"
+            # )
             return schedule
 
         gpu = current_resident
         gpu_keys = {(d.key.layer, d.key.expert_id) for d in gpu}
         cpu = [d for d in current if (d.key.layer, d.key.expert_id) not in gpu_keys]
         schedule = ExpertSchedule(cpu=cpu, gpu=gpu, preload=[], evict=[], reason="decode-mode-c")
-        print(
-            "[DecodeSchedule] "
-            f"layer={request.layer} mode={schedule.reason} "
-            f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} preload=[]"
-        )
+        # print(
+        #     "[DecodeSchedule] "
+        #     f"layer={request.layer} mode={schedule.reason} "
+        #     f"gpu={schedule.gpu_expert_ids} cpu={schedule.cpu_expert_ids} preload=[]"
+        # )
         return schedule
 
     def _select_global_queue(
@@ -603,9 +586,22 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
             placement = PlacementSnapshot(gpu_resident=gpu_resident)
 
         for demand in current_demands:
-            if placement.is_on_gpu(demand.key.layer, demand.key.expert_id):
+            on_gpu = placement.is_on_gpu(demand.key.layer, demand.key.expert_id)
+            in_static = (demand.key.layer, demand.key.expert_id) in placement.gpu_resident
+            in_placeholder = (demand.key.layer, demand.key.expert_id) in placement.placeholder_resident
+            if on_gpu:
                 self.cnt_expert_hit += demand.token_count
             self.cnt_expert_all += demand.token_count
+            if i_layer <= 2:
+                print(f"[HitRate] layer={i_layer} expert={demand.key.expert_id} "
+                      f"tokens={demand.token_count} on_gpu={on_gpu} "
+                      f"static={in_static} placeholder={in_placeholder} "
+                      f"|gpu_resident|={len(placement.gpu_resident)} "
+                      f"|placeholder_resident|={len(placement.placeholder_resident)}")
+        if i_layer <= 2:
+            print(f"[HitRate] layer={i_layer} cumulative hit={self.cnt_expert_hit} "
+                  f"all={self.cnt_expert_all} rate={self.cnt_expert_hit / max(self.cnt_expert_all, 1):.4f} "
+                  f"snapshot_gpu_resident_sample={list(placement.gpu_resident)[:5]}")
 
         request = ExpertLayerRequest(
             layer=i_layer,
@@ -617,142 +613,3 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
         schedule = self.scheduler.schedule(request, placement, self.latency_model)
         return schedule.cpu_expert_ids, schedule.gpu_expert_ids, schedule.preload_expert_ids, raw_assignments
 
-    def _prefill_schedule(
-        self, i_layer, cpu_experts, gpu_experts, token_counts,
-        predicted_next_experts, predicted_next_weights,
-    ) -> List[int]:
-        """旧版 prefill 调度逻辑（已被 PDScopeScheduler.schedule_prefill 替代）
-
-        保留用于兼容和对比测试。内部使用原始 tuple 格式而非 ExpertDemand。
-        """
-        t_attn = 0.6
-
-        cur_non_resident = []
-        for eid in cpu_experts:
-            tc = token_counts.get(eid, 1)
-            cur_non_resident.append(("cur", eid, tc))
-        for eid in gpu_experts:
-            if not self.is_expert_in_gpu(i_layer, eid):
-                tc = token_counts.get(eid, 1)
-                cur_non_resident.append(("cur", eid, tc))
-
-        next_token_counts = {}
-        for batch_idx in range(predicted_next_experts.shape[0]):
-            for expert in predicted_next_experts[batch_idx]:
-                eid = expert.item()
-                next_token_counts[eid] = next_token_counts.get(eid, 0) + 1
-
-        next_non_resident = []
-        for eid, tc in next_token_counts.items():
-            if not self.is_expert_in_gpu(i_layer + 1, eid):
-                next_non_resident.append(("next", eid, tc))
-
-        E_all = cur_non_resident + next_non_resident
-        E_all.sort(key=lambda x: x[2])
-
-        n = len(cur_non_resident)
-        n_prime = len(next_non_resident)
-        total = len(E_all)
-
-        alpha = 0.1
-        L_global = []
-        for i in range(total):
-            n_transfer = total - i
-            T_all_G = alpha + n_transfer * self.t_io + _lookup_latency(self.latency_gpu_table, 1)
-            T_all_C = sum(
-                _lookup_latency(self.latency_cpu_table, E_all[j][2])
-                for j in range(i)
-            ) + t_attn
-            if T_all_G < T_all_C:
-                L_global = E_all[i:]
-                break
-
-        cur_in_global = [e for e in L_global if e[0] == "cur"]
-        n_cur = len(cur_in_global)
-        L_on = []
-        T_G = 0.0
-        T_C = 0.0
-        for i_prime in range(n_cur + 1):
-            n_g = sum(1 for e in cur_in_global[i_prime:])
-            T_G_compute = n_g * _lookup_latency(self.latency_gpu_table, 1)
-            T_G_io = alpha + (n_cur - i_prime) * self.t_io if i_prime < n_cur else 0
-            T_G = max(T_G_compute, T_G_io) + _lookup_latency(self.latency_gpu_table, 1)
-            T_C = sum(
-                _lookup_latency(self.latency_cpu_table, cur_in_global[j][2])
-                for j in range(i_prime)
-            )
-            if T_G < T_C and i_prime > 0:
-                L_on = cur_in_global[i_prime:]
-                break
-
-        T_gap = max(0, T_C - T_G)
-        f = math.floor((T_gap + t_attn) / self.t_io)
-        R_hit = 0.8
-        f_abs = abs(f)
-        if f_abs > 0:
-            xi = R_hit * (f - f_abs + 1) * self.t_io - (1 - R_hit) * (f_abs - f) * self.t_io
-        else:
-            xi = 0
-
-        prefetch = []
-        if xi > 0 and f_abs > 0:
-            next_in_global = [e for e in L_global if e[0] == "next"]
-            for e in next_in_global[:f_abs]:
-                prefetch.append(e[1])
-
-        return prefetch
-
-    def _decode_schedule(
-        self, i_layer, cpu_experts, gpu_experts, token_counts,
-        predicted_next_experts, predicted_next_weights,
-    ) -> List[int]:
-        """旧版 decode 调度逻辑（已被 PDScopeScheduler.schedule_decode 替代）
-
-        保留用于兼容和对比测试。内部使用原始 tuple 格式而非 ExpertDemand。
-        """
-        k = len(cpu_experts) + len(gpu_experts)
-        if k == 0:
-            return []
-
-        t_c_1 = _lookup_latency(self.latency_cpu_table, 1)
-        t_g_1 = _lookup_latency(self.latency_gpu_table, 1)
-
-        n_g_rho = 1
-        best_max = float("inf")
-        for n_g in range(k + 1):
-            val = max(n_g * t_g_1, (k - n_g) * t_c_1)
-            if val < best_max:
-                best_max = val
-                n_g_rho = n_g
-
-        cur_gpu_resident = sum(1 for e in gpu_experts if self.is_expert_in_gpu(i_layer, e))
-
-        next_token_counts = {}
-        for batch_idx in range(predicted_next_experts.shape[0]):
-            for expert in predicted_next_experts[batch_idx]:
-                eid = expert.item()
-                next_token_counts[eid] = next_token_counts.get(eid, 0) + 1
-
-        next_gpu_resident = 0
-        for eid in next_token_counts:
-            if self.is_expert_in_gpu(i_layer + 1, eid):
-                next_gpu_resident += 1
-
-        cur_below = cur_gpu_resident < n_g_rho
-        next_below = next_gpu_resident < n_g_rho
-
-        if cur_below and next_below:
-            return self._prefill_schedule(
-                i_layer, cpu_experts, gpu_experts, token_counts,
-                predicted_next_experts, predicted_next_weights,
-            )
-        elif cur_below and not next_below:
-            return []
-        elif not cur_below and next_below:
-            prefetch = []
-            for eid in next_token_counts:
-                if not self.is_expert_in_gpu(i_layer + 1, eid):
-                    prefetch.append(eid)
-            return prefetch
-        else:
-            return []

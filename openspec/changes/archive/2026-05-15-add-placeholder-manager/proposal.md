@@ -8,7 +8,7 @@
 - 支持多个占位符的管理和分配
 - 提供占位符加载、释放、状态查询等接口
 - 引入淘汰策略抽象（`EvictionStrategy`），支持 LRU、FIFO 等算法，便于扩展
-- 修改 `FiddlerDeepSeek` 类，使用新的占位符管理器替代原有的 `self.expert_placeholder`
+- 修改 `mDeepSeek` 类，使用新的占位符管理器替代原有的 `self.expert_placeholder`
 - 更新相关策略类，适配新的占位符管理接口
 
 ## Capabilities

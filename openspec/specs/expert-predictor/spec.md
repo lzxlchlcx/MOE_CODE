@@ -33,5 +33,5 @@
 系统应支持通过配置选择不同的预测策略。
 
 #### Scenario: 使用自定义预测器
-- **WHEN** 实现继承自 `ExpertPredictor` 的自定义预测器并传入 FiddlerDeepSeek
+- **WHEN** 实现继承自 `ExpertPredictor` 的自定义预测器并传入 mDeepSeek
 - **THEN** 系统使用自定义预测器进行专家预测

@@ -1,6 +1,6 @@
 ## Context
 
-当前 `FiddlerDeepSeek.mixtral_forward` 方法的 MoE 层处理中，专家执行逻辑以 120+ 行 `if/else` 块形式硬编码在层循环内。两种调度策略（纯 GPU 执行、CPU-GPU 混合代价优化）交织在一起，公共操作（`expert_mask` 构建、活跃专家收集）重复出现在两个分支中。
+当前 `mDeepSeek.mixtral_forward` 方法的 MoE 层处理中，专家执行逻辑以 120+ 行 `if/else` 块形式硬编码在层循环内。两种调度策略（纯 GPU 执行、CPU-GPU 混合代价优化）交织在一起，公共操作（`expert_mask` 构建、活跃专家收集）重复出现在两个分支中。
 
 ## Goals / Non-Goals
 
@@ -59,9 +59,9 @@ def decide_and_prepare(
 
 ### Decision 4: 策略类放在同一文件内
 
-**选择**: 策略类定义在 `deepseek.py` 文件中，位于 `FiddlerDeepSeek` 类之前。
+**选择**: 策略类定义在 `deepseek.py` 文件中，位于 `mDeepSeek` 类之前。
 
-**理由**: 项目结构简单，避免过度拆分；策略类与 `FiddlerDeepSeek` 强耦合。
+**理由**: 项目结构简单，避免过度拆分；策略类与 `mDeepSeek` 强耦合。
 
 ## Risks / Trade-offs
 

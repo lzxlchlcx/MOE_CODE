@@ -78,7 +78,7 @@
 ## Migration Plan
 
 1. 创建 `ExpertPlaceholderManager` 类
-2. 在 `FiddlerDeepSeek.__init__` 中初始化管理器
+2. 在 `mDeepSeek.__init__` 中初始化管理器
 3. 逐步替换 `_execute_gpu_experts` 中的占位符使用
 4. 更新策略类以适配新接口
 5. 测试验证功能正确性

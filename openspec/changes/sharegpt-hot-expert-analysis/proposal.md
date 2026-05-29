@@ -23,5 +23,5 @@
 
 - 影响推理/脚本入口，例如 `src/scripts/infer_deepseek.py` 或新增专用分析脚本。
 - 影响 `src/model/deepseek.py` 中 gate 路由或推理过程的可观测性，需要暴露或记录专家选择统计。
-- 影响 `hot/` 目录输出约定，需确保生成文件可被现有 `FiddlerDeepSeek.set_expert_loc()` 的 `layer,expert` 行格式读取。
+- 影响 `hot/` 目录输出约定，需确保生成文件可被现有 `mDeepSeek.set_expert_loc()` 的 `layer,expert` 行格式读取。
 - 不引入新的模型依赖；复用现有 ShareGPT JSON 加载、DeepSeek 推理和 MoE gate 结果。

@@ -4,7 +4,7 @@ import os
 import random
 from collections import Counter
 
-from model.deepseek import FiddlerDeepSeek
+from model.deepseek import mDeepSeek
 
 
 def load_sharegpt_prompts(dataset_path):
@@ -88,7 +88,7 @@ def main():
     args = parse_args()
 
     prompts = sample_prompts(load_sharegpt_prompts(args.dataset), args.num_samples, args.seed)
-    model = FiddlerDeepSeek(args)
+    model = mDeepSeek(args)
     model.reset_hot_expert_stats()
 
     for start in range(0, len(prompts), args.batch_size):

@@ -25,6 +25,6 @@
 
 ## 4. 验证与调试
 
-- [ ] 4.1 运行现有的 `40-myself/src/infer_deepseek.py` 验证模型推理功能正常
+- [x] 4.1 运行现有的 `40-myself/src/infer_deepseek.py` 验证模型推理功能正常
 - [x] 4.2 添加日志输出预取命中情况：打印每层预取的专家列表和预取耗时
-- [ ] 4.3 对比 `PrefetchHybridStrategy` 和 `HybridCPUGPUStrategy` 的 Decode 阶段延迟数据
+- [x] 4.3 对比 `PrefetchHybridStrategy` 和 `HybridCPUGPUStrategy` 的 Decode 阶段延迟数据

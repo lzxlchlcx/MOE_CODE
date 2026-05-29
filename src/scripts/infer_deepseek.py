@@ -3,10 +3,11 @@ import json
 import os
 import random
 
-from model.deepseek import FiddlerDeepSeek
+from model.deepseek import mDeepSeek
 
 
-def load_prompts_from_dataset(dataset_path, batch_size):
+def load_prompts_from_dataset(dataset_path, batch_size, seed=42):
+    rng = random.Random(seed)
     with open(dataset_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     all_prompts = []
@@ -15,7 +16,7 @@ def load_prompts_from_dataset(dataset_path, batch_size):
             if turn.get("from") == "human":
                 all_prompts.append(turn["value"])
                 break
-    return random.sample(all_prompts, min(batch_size, len(all_prompts)))
+    return rng.sample(all_prompts, min(batch_size, len(all_prompts)))
 
 
 if __name__ == "__main__":
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     parser.add_argument("--beam-width", type=int, default=1, help="Beam search width.")
 
     args = parser.parse_args()
-    model = FiddlerDeepSeek(args)
+    model = mDeepSeek(args)
 
     if args.dataset:
         input_text = load_prompts_from_dataset(args.dataset, args.batch_size)

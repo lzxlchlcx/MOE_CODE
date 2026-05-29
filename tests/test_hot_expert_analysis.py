@@ -108,7 +108,7 @@ def test_analysis_entrypoint_generates_hot_files(tmp_path, monkeypatch):
         def generate(self, batch, output_token):
             self.hot_expert_counts.update({(1, 2): 4, (2, 3): 1})
 
-    monkeypatch.setattr(analyze_hot_experts, "FiddlerDeepSeek", FakeModel)
+    monkeypatch.setattr(analyze_hot_experts, "mDeepSeek", FakeModel)
     monkeypatch.setattr(
         sys,
         "argv",

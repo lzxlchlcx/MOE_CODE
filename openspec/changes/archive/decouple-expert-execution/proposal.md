@@ -21,7 +21,7 @@
 
 ## Impact
 
-- 文件：`40-myself/src/deepseek.py` — 主要修改对象，`FiddlerDeepSeek` 类结构变更
+- 文件：`40-myself/src/deepseek.py` — 主要修改对象，`mDeepSeek` 类结构变更
 - `mixtral_forward` 方法体简化，专家执行逻辑分为策略决策+前向执行两步
 - 无 API 层面变更，`generate()` 等外部接口保持不变
 - 无新增依赖

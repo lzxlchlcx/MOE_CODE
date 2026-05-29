@@ -16,7 +16,7 @@ from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Rotar
 from transformers.masking_utils import create_causal_mask
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from model.deepseek import FiddlerDeepSeek
+from model.deepseek import mDeepSeek
 
 WEIGHT_NAMES = ['gate_proj', 'up_proj', 'down_proj']
 
@@ -25,7 +25,7 @@ def bench_expert_cpu(model, token_counts=None, n_repeat=20):
     """测量单个 expert 在 CPU 上不同 token 数量时的计算时间
 
     Args:
-        model: FiddlerDeepSeek 实例
+        model: mDeepSeek 实例
         token_counts: 要测量的 token 数量列表
         n_repeat: 每个 token 数量重复测量的次数
 
@@ -61,7 +61,7 @@ def bench_expert_gpu(model, token_counts=None, n_repeat=10):
     """测量单个 expert 在 GPU 上不同 token 数量时的计算时间
 
     Args:
-        model: FiddlerDeepSeek 实例
+        model: mDeepSeek 实例
         token_counts: 要测量的 token 数量列表
         n_repeat: 每个 token 数量重复测量的次数
 
@@ -99,7 +99,7 @@ def bench_expert_weight_copy(model, n_repeat=5):
     使用 pin_memory + copy_ 方式，与实际推理一致。
 
     Args:
-        model: FiddlerDeepSeek 实例
+        model: mDeepSeek 实例
         n_repeat: 重复测量次数
 
     Returns:
@@ -133,7 +133,7 @@ def bench_attention(model, token_counts=None, use_cache=False, n_repeat=5):
     """测量 attention 计算时间（有无 KV cache）
 
     Args:
-        model: FiddlerDeepSeek 实例
+        model: mDeepSeek 实例
         token_counts: 要测量的 token 数量列表
         use_cache: 是否使用 KV cache（True=decode 模式 1 token, False=prefill 全量）
         n_repeat: 重复测量次数
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     parser.add_argument("--beam-width", type=int, default=1)
 
     args = parser.parse_args()
-    model = FiddlerDeepSeek(args)
+    model = mDeepSeek(args)
 
     print("=" * 60)
     print("1. Expert CPU computation time (token_count, time_ms)")

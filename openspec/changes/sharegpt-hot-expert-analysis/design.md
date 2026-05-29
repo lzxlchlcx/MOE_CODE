@@ -1,6 +1,6 @@
 ## Context
 
-当前 `src/scripts/infer_deepseek.py` 已支持 `--dataset` 从 ShareGPT JSON 中抽样 prompt，并调用 `FiddlerDeepSeek.generate()` 运行推理。`FiddlerDeepSeek.set_expert_loc()` 已经尝试读取 `./hot/deep.txt`，格式为每行 `layer,expert`，用于优先把热门专家放入 GPU。因此系统已有数据入口和热专家消费入口，但缺少中间的“采集 gate 路由统计并生成 hot 文件”的能力。
+当前 `src/scripts/infer_deepseek.py` 已支持 `--dataset` 从 ShareGPT JSON 中抽样 prompt，并调用 `mDeepSeek.generate()` 运行推理。`mDeepSeek.set_expert_loc()` 已经尝试读取 `./hot/deep.txt`，格式为每行 `layer,expert`，用于优先把热门专家放入 GPU。因此系统已有数据入口和热专家消费入口，但缺少中间的“采集 gate 路由统计并生成 hot 文件”的能力。
 
 现有 MoE 路由发生在 `src/model/deepseek.py` 的每层 gate 计算附近，调度器随后基于 `selected_experts` 构造当前层需求。热专家分析最自然的数据源是 gate 输出的真实 `selected_experts`，而不是调度器最终分配到 CPU/GPU 的结果；后者会受到当前 GPU 常驻状态、placeholder、预取和 offload 策略影响，不适合作为“数据集真实热度”。
 

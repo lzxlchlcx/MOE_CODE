@@ -47,7 +47,7 @@
 - **THEN** 调用对应的辅助函数完成操作，不重复实现相同逻辑
 
 ### Requirement: 策略选择与注入
-系统 SHALL 在 `FiddlerDeepSeek.__init__` 中根据 `args.cpu_offload` 参数选择并实例化对应的调度策略，存储为 `self.expert_strategy`。`cpu_offload == 0` 时使用 `GPUOnlyStrategy`，否则使用 `HybridCPUGPUStrategy`。prefill 阶段（`force_gpu=True`）时 SHALL 统一使用 `GPUOnlyStrategy`。
+系统 SHALL 在 `mDeepSeek.__init__` 中根据 `args.cpu_offload` 参数选择并实例化对应的调度策略，存储为 `self.expert_strategy`。`cpu_offload == 0` 时使用 `GPUOnlyStrategy`，否则使用 `HybridCPUGPUStrategy`。prefill 阶段（`force_gpu=True`）时 SHALL 统一使用 `GPUOnlyStrategy`。
 
 #### Scenario: cpu_offload 为 0 时选择纯 GPU 策略
 - **WHEN** `args.cpu_offload == 0`

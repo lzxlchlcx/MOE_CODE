@@ -29,7 +29,7 @@ from model.expert_executor import ExpertExecutionManager
 from model.expert_latency import ExpertLatencyModel
 from model.expert_types import ExpertDemand, ExpertKey, ExpertLayerContext, ExpertSchedule, build_assignments
 
-class FiddlerDeepSeek:
+class mDeepSeek:
 
     def __init__(self, args):
         self.dtype = torch.bfloat16
@@ -53,7 +53,7 @@ class FiddlerDeepSeek:
         self.placeholder_manager = ExpertPlaceholderManager(
             template_expert=template_expert,
             device=self.dev,
-            num_placeholders=12,
+            num_placeholders= 2 * self.model.config.n_routed_experts,  # 每层非共享专家的两倍占位符数量
             eviction_strategy=LRUEvictionStrategy(),
         )
         self.expert_placeholder = self.placeholder_manager._placeholders[0]
@@ -75,7 +75,7 @@ class FiddlerDeepSeek:
 
         ### 加载基准数据，设置专家调度策略的 CPU/GPU 延迟参数
         self.latency_cpu = 0.142
-        self.latency_copy = 1.67
+        self.latency_copy = 0.8905
         self.latency_gpu = 0.093
         self.latency_cpu_table = {1: 0.142}
         self.latency_gpu_table = {1: 0.093}
@@ -113,9 +113,9 @@ class FiddlerDeepSeek:
             self.expert_strategy = FiddlerStrategy(
                 self.dev, self.is_expert_in_gpu,
                 latency_cpu=self.latency_cpu,
-                latency_gpu=self.latency_copy
+                latency_gpu=self.latency_gpu,
+                latency_io = self.latency_copy
             )
-            self.hybrid_strategy = self.expert_strategy
         self.gpu_only_strategy = GPUOnlyStrategy(self.dev, self.is_expert_in_gpu)
 
         self.expert_predictor = GatePredictor()
@@ -412,7 +412,6 @@ class FiddlerDeepSeek:
     @torch.no_grad()
     def mixtral_forward(self, input_ids, position_ids, attention_mask, cache_position, is_prefill=False):
         hidden_dim = self.model.config.hidden_size
-        force_gpu = is_prefill
 
         inps = self.model.embed_tokens(input_ids)
 
@@ -523,10 +522,7 @@ class FiddlerDeepSeek:
             experts = layer.mlp.experts
         
             # 选择策略
-            if force_gpu:
-                strategy = self.gpu_only_strategy
-            else:
-                strategy = self.expert_strategy
+            strategy = self.expert_strategy
 
             # 策略决策和预处理（PrefetchHybridStrategy 返回 4-tuple）
             result_tuple = strategy.decide_and_prepare(
@@ -542,10 +538,11 @@ class FiddlerDeepSeek:
                 prefetch_experts = []
             # print(f"Layer {i_layer}: GPU experts: {gpu_experts}, CPU experts: {cpu_experts}, Prefetch: {prefetch_experts}")
 
-            # 更新统计（如果是 Hybrid 策略）
-            if hasattr(self, 'hybrid_strategy') and not force_gpu:
-                self.cnt_expert_hit = self.hybrid_strategy.cnt_expert_hit
-                self.cnt_expert_all = self.hybrid_strategy.cnt_expert_all
+            # 更新统计
+            if isinstance(strategy, FiddlerStrategy) or isinstance(strategy, PrefetchHybridStrategy):
+                self.cnt_expert_hit = self.expert_strategy.cnt_expert_hit
+                self.cnt_expert_all = self.expert_strategy.cnt_expert_all
+            
 
             schedule = ExpertSchedule(
                 cpu=[ExpertDemand(ExpertKey(i_layer, eid), expert_assignments[eid][0].shape[0]) for eid in cpu_experts],

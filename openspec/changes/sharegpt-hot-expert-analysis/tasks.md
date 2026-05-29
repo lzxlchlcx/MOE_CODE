@@ -23,4 +23,4 @@
 - [x] 4.1 添加或更新轻量测试，验证 ShareGPT prompt 抽样数量、超量样本处理和 seed 可复现性
 - [x] 4.2 添加或更新测试，验证 hot 文本文件格式与排序结果
 - [x] 4.3 使用小样本 ShareGPT 输入运行分析入口，确认能够生成 `hot/deep.txt` 和统计 JSON
-- [x] 4.4 验证生成的 `hot/deep.txt` 可被 `FiddlerDeepSeek.set_expert_loc()` 正常读取
+- [x] 4.4 验证生成的 `hot/deep.txt` 可被 `mDeepSeek.set_expert_loc()` 正常读取

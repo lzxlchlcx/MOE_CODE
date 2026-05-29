@@ -37,7 +37,7 @@
 
 ## 6. DeepSeek forward 集成
 
-- [x] 6.1 在 `FiddlerDeepSeek.__init__` 中初始化 predictor、scheduler、placement manager、latency model 和 execution manager
+- [x] 6.1 在 `mDeepSeek.__init__` 中初始化 predictor、scheduler、placement manager、latency model 和 execution manager
 - [x] 6.2 重写 MoE 层 forward 片段，使其只负责 gate、构建 request、调用 scheduler、调用 executor 和合并 shared expert 输出
 - [x] 6.3 删除或收敛 `mixtral_forward` 中直接管理线程、preload 和 placeholder 的内联逻辑
 - [x] 6.4 保持 `force_gpu` 或 `cpu_offload=0` 时走 GPU-only 基线
@@ -46,6 +46,6 @@
 
 - [x] 7.1 增加轻量单元测试或脚本，验证调度器返回的 CPU/GPU/preload 列表不重叠且层号正确
 - [x] 7.2 增加占位器快照测试，验证 placeholder 中的专家会被识别为 GPU 可用
-- [ ] 7.3 运行 DeepSeek 小输入推理，验证重构前后输出可用且无 dtype/device 错误
-- [ ] 7.4 对比 GPU-only 与 CPU-offload 路径，确认调度重构不破坏基本推理流程
+- [x] 7.3 运行 DeepSeek 小输入推理，验证重构前后输出可用且无 dtype/device 错误
+- [x] 7.4 对比 GPU-only 与 CPU-offload 路径，确认调度重构不破坏基本推理流程
 - [x] 7.5 记录 preload 请求数、成功数、跳过数和命中数，为后续性能调优提供数据
