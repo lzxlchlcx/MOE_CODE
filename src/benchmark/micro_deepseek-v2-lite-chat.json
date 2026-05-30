@@ -1,130 +1,234 @@
 {
   "model_name": "deepseek-v2-lite-chat",
-  "timestamp": "2026-05-29T17:17:23.457772",
+  "timestamp": "2026-05-29T22:41:56.923935",
   "expert_cpu": [
     {
       "token_count": 1,
-      "avg_time_ms": 0.1667
+      "avg_time_ms": 0.1432
     },
     {
       "token_count": 2,
-      "avg_time_ms": 0.2478
+      "avg_time_ms": 0.2154
     },
     {
       "token_count": 4,
-      "avg_time_ms": 0.3916
+      "avg_time_ms": 0.4071
     },
     {
       "token_count": 8,
-      "avg_time_ms": 0.7146
+      "avg_time_ms": 0.8312
     },
     {
       "token_count": 16,
-      "avg_time_ms": 1.4036
+      "avg_time_ms": 1.4027
     },
     {
       "token_count": 32,
-      "avg_time_ms": 2.7065
+      "avg_time_ms": 2.7771
     },
     {
       "token_count": 64,
-      "avg_time_ms": 5.4868
+      "avg_time_ms": 5.6299
     },
     {
       "token_count": 128,
-      "avg_time_ms": 11.0067
+      "avg_time_ms": 11.0836
     }
   ],
   "expert_gpu": [
     {
       "token_count": 1,
-      "avg_time_ms": 0.091
+      "avg_time_ms": 0.112
     },
     {
       "token_count": 2,
-      "avg_time_ms": 0.0861
+      "avg_time_ms": 0.0908
     },
     {
       "token_count": 4,
-      "avg_time_ms": 0.0858
+      "avg_time_ms": 0.0869
     },
     {
       "token_count": 8,
-      "avg_time_ms": 0.087
+      "avg_time_ms": 0.0876
     },
     {
       "token_count": 16,
-      "avg_time_ms": 0.0855
+      "avg_time_ms": 0.0873
     },
     {
       "token_count": 32,
-      "avg_time_ms": 0.0919
+      "avg_time_ms": 0.1315
     },
     {
       "token_count": 64,
-      "avg_time_ms": 0.0996
+      "avg_time_ms": 0.1354
     },
     {
       "token_count": 128,
-      "avg_time_ms": 0.1085
+      "avg_time_ms": 0.1068
     }
   ],
   "expert_weight_copy": {
     "trials_ms": [
-      1.0314,
-      0.8154,
-      0.8602,
-      0.849,
-      0.8967
+      0.757,
+      0.7625,
+      0.7541,
+      0.7586,
+      0.7584,
+      0.7563,
+      0.7582,
+      0.7863,
+      0.8039,
+      0.8063,
+      0.7546,
+      0.7641,
+      0.7815,
+      0.7694,
+      0.7584,
+      0.7489,
+      0.7448,
+      0.7489,
+      0.7668,
+      0.7534,
+      0.7515,
+      0.7532,
+      0.7579,
+      0.7532,
+      0.761,
+      0.7496,
+      0.7634,
+      0.7679,
+      0.7515,
+      0.7582,
+      0.7601,
+      0.7586,
+      0.7513,
+      0.7524,
+      0.7484,
+      0.7527,
+      0.7656,
+      0.747,
+      0.747,
+      0.7465,
+      0.7558,
+      0.7522,
+      0.7451,
+      0.7432,
+      0.7439,
+      0.7694,
+      0.7722,
+      0.7527,
+      0.766,
+      0.7563
     ],
-    "avg_ms": 0.8905
+    "avg_ms": 0.7589,
+    "median_ms": 0.7563,
+    "p95_ms": 0.7842
+  },
+  "expert_manager_weight_copy": {
+    "trials_ms": [
+      0.8454,
+      0.8571,
+      0.931,
+      0.8216,
+      0.7477,
+      0.746,
+      0.7565,
+      0.7634,
+      0.7927,
+      0.7927,
+      0.798,
+      0.8032,
+      0.7668,
+      0.777,
+      0.7699,
+      0.7644,
+      0.7768,
+      0.7887,
+      0.7801,
+      0.807,
+      0.8457,
+      0.7694,
+      0.7637,
+      0.7629,
+      0.7751,
+      0.7555,
+      0.766,
+      0.7613,
+      0.7482,
+      0.7732,
+      0.7496,
+      0.7486,
+      0.7522,
+      0.772,
+      0.7527,
+      0.7606,
+      0.7555,
+      0.752,
+      0.7489,
+      0.7997,
+      0.8109,
+      0.7768,
+      0.8409,
+      0.7832,
+      0.762,
+      0.7899,
+      0.7606,
+      0.7479,
+      0.7412,
+      0.7412
+    ],
+    "avg_ms": 0.7791,
+    "median_ms": 0.7681,
+    "p95_ms": 0.8456
   },
   "attention_prefill": [
     {
       "token_count": 1,
-      "avg_time_ms": 0.4675
+      "avg_time_ms": 0.5487
     },
     {
       "token_count": 8,
-      "avg_time_ms": 0.4428
+      "avg_time_ms": 0.5261
     },
     {
       "token_count": 32,
-      "avg_time_ms": 0.4799
+      "avg_time_ms": 0.4743
     },
     {
       "token_count": 64,
-      "avg_time_ms": 0.4946
+      "avg_time_ms": 0.4535
     },
     {
       "token_count": 128,
-      "avg_time_ms": 0.4858
+      "avg_time_ms": 0.6214
     },
     {
       "token_count": 256,
-      "avg_time_ms": 0.495
+      "avg_time_ms": 0.7445
     }
   ],
   "attention_decode": [
     {
       "past_length": 1,
-      "avg_time_ms": 0.4499
+      "avg_time_ms": 0.438
     },
     {
       "past_length": 8,
-      "avg_time_ms": 0.4132
+      "avg_time_ms": 0.4335
     },
     {
       "past_length": 32,
-      "avg_time_ms": 0.4579
+      "avg_time_ms": 0.4637
     },
     {
       "past_length": 64,
-      "avg_time_ms": 0.4348
+      "avg_time_ms": 0.5599
     },
     {
       "past_length": 128,
-      "avg_time_ms": 0.5549
+      "avg_time_ms": 0.4395
     },
     {
       "past_length": 256,

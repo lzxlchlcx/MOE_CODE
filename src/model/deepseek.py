@@ -75,7 +75,7 @@ class mDeepSeek:
 
         ### 加载基准数据，设置专家调度策略的 CPU/GPU 延迟参数
         self.latency_cpu = 0.142
-        self.latency_copy = 0.8905
+        self.latency_copy = 1.4
         self.latency_gpu = 0.093
         self.latency_cpu_table = {1: 0.142}
         self.latency_gpu_table = {1: 0.093}
@@ -118,6 +118,7 @@ class mDeepSeek:
             )
         self.gpu_only_strategy = GPUOnlyStrategy(self.dev, self.is_expert_in_gpu)
 
+        # 初始化专家预测器和专家执行器
         self.expert_predictor = GatePredictor()
         self.predicted_next_demands = []
         self.latency_model = ExpertLatencyModel(
@@ -126,18 +127,19 @@ class mDeepSeek:
             latency_gpu_table=self.latency_gpu_table,
         )
 
+        # 加载模型权重到 GPU，先加载非专家模块，再加载hot专家模块
         load_model_tick = time.time()
-        self.bring_non_expert_to_gpu()
-        print("non-expert modules loaded to GPU, time:", time.time() - load_model_tick)
+        self.bring_non_routed_expert_to_gpu()
+        print("shared expert and other modules loaded to GPU, time:", time.time() - load_model_tick)
 
+        # 加载hot专家权重到 GPU 并初始化专家位置映射
         self.expert_loc = np.zeros((self.n_layer, self.n_expert), dtype=int)
         n_expert_on_gpu = self.calc_n_expert_on_gpu()
-        print(
-            f"Number of experts on GPU: {n_expert_on_gpu}/{(self.n_layer - 1) * self.n_expert}"
-        )
-
         self.set_expert_loc(n_expert_on_gpu)
-
+        print(
+            f"Number of routed experts on GPU: {n_expert_on_gpu}/{(self.n_layer - 1) * self.n_expert}"
+        )
+        ## 计时——加载hot专家和executor
         load_model_tick = time.time()
         self.bring_expert_to_gpu()
         self.expert_executor = ExpertExecutionManager(
@@ -147,6 +149,7 @@ class mDeepSeek:
             is_expert_in_gpu=self.is_expert_in_gpu,
         )
         print("experts loaded to GPU, time:", time.time() - load_model_tick)
+
         print("Model is ready.")
 
     def _load_benchmark_data(self, model_path):
@@ -164,11 +167,11 @@ class mDeepSeek:
 
 
 
-    def bring_non_expert_to_gpu(self):
+    def bring_non_routed_expert_to_gpu(self):
         self.lm_head.to(self.dev)
         self.model.embed_tokens.to(self.dev)
         self.model.norm.to(self.dev)
-        self.model.layers[0].to(self.dev)
+        self.model.layers[0].to(self.dev) # 第一层包含非 MoE MLP，先加载到 GPU
         for i in range(len(self.model.layers)):
             if i != 0:
                 self.model.layers[i].self_attn.to(self.dev)
@@ -268,31 +271,17 @@ class mDeepSeek:
 
     def generate(self, text=None, output_token=20, input_token=None):
         torch.set_num_threads(16)
-        self.past_key_value = transformers.cache_utils.DynamicCache()
-        self.past_key_values_length = 0
-
-        self.cnt_expert_hit = 0
-        self.cnt_expert_all = 0
+        self.reset_runtime_state(clear_placeholders=False)
 
         if text is None:
             text = ["default input"] * self.batch_size
         elif isinstance(text, str):
             text = [text] * self.batch_size
 
-        prompt = f"<|User|>: {text[0]} \n<|Assistant|>:"
         input_ids, position_ids, attention_mask = self.tokenize(text, input_token)
 
-        if input_token is not None:
-            input_ids = torch.stack([
-                ids[:input_token] if len(ids) > input_token else ids
-                for ids in input_ids
-            ])
-            position_ids = torch.stack([
-                pos[:input_token] if len(pos) > input_token else pos
-                for pos in position_ids
-            ])
-            attention_mask = attention_mask[:, :input_token] if input_token is not None else attention_mask
-
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize(self.dev)
         tick = time.time()
         is_decode = False
         prefill_time, decode_time = 0, 0
@@ -372,10 +361,15 @@ class mDeepSeek:
             )
 
             if not is_decode:
+                if self.dev.type == "cuda":
+                    print("Prefill阶段完成,等待GPU同步...")
+                    torch.cuda.synchronize(self.dev)
                 prefill_time += time.time() - tick
                 tick = time.time()
             is_decode = True
 
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize(self.dev)
         decode_time = time.time() - tick
         probs = probs.view(-1, self.beam_width)
         max_ids = torch.argmax(probs, dim=-1)
@@ -389,6 +383,27 @@ class mDeepSeek:
             decode_time,
             self.cnt_expert_hit / max(self.cnt_expert_all, 1),
         )
+
+    def reset_runtime_state(self, clear_placeholders=False):
+        self.past_key_value = transformers.cache_utils.DynamicCache()
+        self.past_key_values_length = 0
+        self.predicted_next_demands = []
+        self.cnt_expert_hit = 0
+        self.cnt_expert_all = 0
+
+        if hasattr(self.expert_strategy, "cnt_expert_hit"):
+            self.expert_strategy.cnt_expert_hit = 0
+        if hasattr(self.expert_strategy, "cnt_expert_all"):
+            self.expert_strategy.cnt_expert_all = 0
+
+        if hasattr(self, "expert_executor"):
+            self.expert_executor.preload_request_count = 0
+            self.expert_executor.preload_success_count = 0
+            self.expert_executor.preload_skip_count = 0
+            self.expert_executor.preload_hit_count = 0
+
+        if clear_placeholders:
+            self.placeholder_manager.clear_dynamic_placeholders()
 
     def reset_hot_expert_stats(self):
         self.hot_expert_counts.clear()

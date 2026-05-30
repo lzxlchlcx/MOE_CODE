@@ -17,6 +17,7 @@ from transformers.masking_utils import create_causal_mask
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from model.deepseek import mDeepSeek
+from model.placeholder_manager import ExpertPlaceholderManager
 
 WEIGHT_NAMES = ['gate_proj', 'up_proj', 'down_proj']
 
@@ -93,7 +94,17 @@ def bench_expert_gpu(model, token_counts=None, n_repeat=10):
     return results
 
 
-def bench_expert_weight_copy(model, n_repeat=5):
+def summarize_measurements(results):
+    values_ms = np.array(results) * 1000
+    return {
+        "trials_ms": [round(t, 4) for t in values_ms],
+        "avg_ms": round(float(np.mean(values_ms)), 4),
+        "median_ms": round(float(np.median(values_ms)), 4),
+        "p95_ms": round(float(np.percentile(values_ms, 95)), 4),
+    }
+
+
+def bench_expert_weight_copy(model, n_repeat=30, n_warmup=5):
     """测量 expert 权重从 CPU 搬运到 GPU 的时间
 
     使用 pin_memory + copy_ 方式，与实际推理一致。
@@ -116,15 +127,48 @@ def bench_expert_weight_copy(model, n_repeat=5):
         w.weight.data = w.weight.data.pin_memory()
 
     results = []
-    for _ in range(n_repeat):
+    for i in range(n_warmup + n_repeat):
         torch.cuda.synchronize()
         tick = time.time()
         for name in WEIGHT_NAMES:
             dst = getattr(expert_placeholder, name).weight.data
             src = getattr(src_expert, name).weight.data
-            dst.copy_(src)
+            dst.copy_(src, non_blocking=True)
         torch.cuda.synchronize()
-        results.append(time.time() - tick)
+        if i >= n_warmup:
+            results.append(time.time() - tick)
+
+    return results
+
+
+def pin_expert_weights(expert):
+    for param in expert.parameters():
+        param.data = param.data.pin_memory()
+    for buffer in expert.buffers():
+        buffer.data = buffer.data.pin_memory()
+
+
+def bench_expert_manager_weight_copy(model, n_repeat=30, n_warmup=5):
+    """测量 placeholder manager 的真实 expert 权重加载路径。"""
+    src_expert = model.model.layers[1].mlp.experts[2]
+    src_expert.to("cpu")
+    pin_expert_weights(src_expert)
+
+    manager = ExpertPlaceholderManager(
+        template_expert=model.model.layers[1].mlp.experts[0],
+        device=model.dev,
+        num_placeholders=1,
+    )
+    placeholder = manager.acquire_free_placeholder(1, 2)
+
+    results = []
+    for i in range(n_warmup + n_repeat):
+        torch.cuda.synchronize()
+        tick = time.time()
+        manager.load_weights(placeholder, src_expert)
+        torch.cuda.synchronize()
+        if i >= n_warmup:
+            results.append(time.time() - tick)
 
     return results
 
@@ -221,7 +265,7 @@ def bench_attention(model, token_counts=None, use_cache=False, n_repeat=5):
 
 
 def save_benchmark_results(model_path, cpu_results, gpu_results, copy_results,
-                           attn_prefill, attn_decode, output_dir=None):
+                           manager_copy_results, attn_prefill, attn_decode, output_dir=None):
     """将所有 benchmark 结果保存为 JSON 文件
 
     Args:
@@ -249,8 +293,10 @@ def save_benchmark_results(model_path, cpu_results, gpu_results, copy_results,
             for tc, t in gpu_results
         ],
         "expert_weight_copy": {
-            "trials_ms": [round(t * 1000, 4) for t in copy_results],
-            "avg_ms": round(np.mean(copy_results) * 1000, 4),
+            **summarize_measurements(copy_results),
+        },
+        "expert_manager_weight_copy": {
+            **summarize_measurements(manager_copy_results),
         },
         "attention_prefill": [
             {"token_count": tc, "avg_time_ms": round(t, 4)}
@@ -279,6 +325,8 @@ if __name__ == "__main__":
     parser.add_argument("--cpu-offload", type=int, default=0, choices=[0, 1, 2])
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--beam-width", type=int, default=1)
+    parser.add_argument("--copy-repeat", type=int, default=30)
+    parser.add_argument("--copy-warmup", type=int, default=5)
 
     args = parser.parse_args()
     model = mDeepSeek(args)
@@ -302,14 +350,33 @@ if __name__ == "__main__":
     print("=" * 60)
     print("3. Expert weight copy CPU->GPU time")
     print("=" * 60)
-    copy_results = bench_expert_weight_copy(model)
+    copy_results = bench_expert_weight_copy(model, n_repeat=args.copy_repeat, n_warmup=args.copy_warmup)
+    copy_summary = summarize_measurements(copy_results)
     for i, t in enumerate(copy_results):
         print(f"  trial={i+1}  copy_time={t*1000:.4f}ms")
-    print(f"  avg={np.mean(copy_results)*1000:.4f}ms")
+    print(
+        f"  avg={copy_summary['avg_ms']:.4f}ms "
+        f"median={copy_summary['median_ms']:.4f}ms "
+        f"p95={copy_summary['p95_ms']:.4f}ms"
+    )
 
     print()
     print("=" * 60)
-    print("4. Attention computation time (token_count, time_ms)")
+    print("4. Expert manager weight copy CPU->GPU time")
+    print("=" * 60)
+    manager_copy_results = bench_expert_manager_weight_copy(model, n_repeat=args.copy_repeat, n_warmup=args.copy_warmup)
+    manager_copy_summary = summarize_measurements(manager_copy_results)
+    for i, t in enumerate(manager_copy_results):
+        print(f"  trial={i+1}  manager_copy_time={t*1000:.4f}ms")
+    print(
+        f"  avg={manager_copy_summary['avg_ms']:.4f}ms "
+        f"median={manager_copy_summary['median_ms']:.4f}ms "
+        f"p95={manager_copy_summary['p95_ms']:.4f}ms"
+    )
+
+    print()
+    print("=" * 60)
+    print("5. Attention computation time (token_count, time_ms)")
     print("-" * 60)
     print("  Without KV cache (prefill):")
     attn_nocache = bench_attention(model, token_counts=[1, 8, 32, 64, 128, 256], use_cache=False)
@@ -326,6 +393,7 @@ if __name__ == "__main__":
         cpu_results=cpu_results,
         gpu_results=gpu_results,
         copy_results=copy_results,
+        manager_copy_results=manager_copy_results,
         attn_prefill=attn_nocache,
         attn_decode=attn_cache,
     )

@@ -80,10 +80,19 @@ class ExpertPlaceholderManager:
 
     def load_weights(self, placeholder: nn.Module, expert: nn.Module):
         with self._lock:
-            placeholder.load_state_dict(expert.state_dict())
+            self._copy_module_tensors(placeholder, expert)
             pid = self._placeholder_to_id(placeholder)
             if pid is not None and self._eviction_strategy is not None:
                 self._eviction_strategy.on_access(pid)
+
+    def _copy_module_tensors(self, dst: nn.Module, src: nn.Module):
+        with torch.no_grad():
+            for name, dst_param in dst.named_parameters():
+                src_param = src.get_parameter(name)
+                dst_param.copy_(src_param, non_blocking=True)
+            for name, dst_buffer in dst.named_buffers():
+                src_buffer = src.get_buffer(name)
+                dst_buffer.copy_(src_buffer, non_blocking=True)
 
     def mark_static_gpu_resident(self, layer_id: int, expert_id: int):
         with self._lock:
@@ -141,6 +150,13 @@ class ExpertPlaceholderManager:
             ]
             for pid in to_release:
                 self._release(pid)
+
+    def clear_dynamic_placeholders(self):
+        """释放所有动态 placeholder 驻留，保留静态 GPU expert 标记。"""
+        with self._lock:
+            for pid in list(self._occupied.keys()):
+                self._release(pid)
+            self._loading.clear()
 
     def is_available(self, placeholder: nn.Module) -> bool:
         pid = self._placeholder_to_id(placeholder)

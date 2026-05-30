@@ -592,16 +592,16 @@ class PrefetchHybridStrategy(ExpertSchedulingStrategy):
             if on_gpu:
                 self.cnt_expert_hit += demand.token_count
             self.cnt_expert_all += demand.token_count
-            if i_layer <= 2:
-                print(f"[HitRate] layer={i_layer} expert={demand.key.expert_id} "
-                      f"tokens={demand.token_count} on_gpu={on_gpu} "
-                      f"static={in_static} placeholder={in_placeholder} "
-                      f"|gpu_resident|={len(placement.gpu_resident)} "
-                      f"|placeholder_resident|={len(placement.placeholder_resident)}")
-        if i_layer <= 2:
-            print(f"[HitRate] layer={i_layer} cumulative hit={self.cnt_expert_hit} "
-                  f"all={self.cnt_expert_all} rate={self.cnt_expert_hit / max(self.cnt_expert_all, 1):.4f} "
-                  f"snapshot_gpu_resident_sample={list(placement.gpu_resident)[:5]}")
+        #     if i_layer <= 2:
+        #         print(f"[HitRate] layer={i_layer} expert={demand.key.expert_id} "
+        #               f"tokens={demand.token_count} on_gpu={on_gpu} "
+        #               f"static={in_static} placeholder={in_placeholder} "
+        #               f"|gpu_resident|={len(placement.gpu_resident)} "
+        #               f"|placeholder_resident|={len(placement.placeholder_resident)}")
+        # if i_layer <= 2:
+        #     print(f"[HitRate] layer={i_layer} cumulative hit={self.cnt_expert_hit} "
+        #           f"all={self.cnt_expert_all} rate={self.cnt_expert_hit / max(self.cnt_expert_all, 1):.4f} "
+        #           f"snapshot_gpu_resident_sample={list(placement.gpu_resident)[:5]}")
 
         request = ExpertLayerRequest(
             layer=i_layer,

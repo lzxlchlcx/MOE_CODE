@@ -9,11 +9,11 @@ __pycache__/
 20-PDScope/*
 10-fiddler-main/*
 datasets/*
-
+docs/*
 # 旧文件（已融合到CLAUDE.md）
 AGENTS.md
 kilo/
-
+logs/
 # 其他
 .kilo/
 .kilocode/
